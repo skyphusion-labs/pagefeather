@@ -94,6 +94,8 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 
 ## WooCommerce
 
+**On b-dosql (Free DO, Paid DO, WfP), WooCommerce is for a light storefront.** Under load the site's Durable Object isolate runs out of memory and resets, and writes in flight can be lost. That is a tracked limit with measured counts in [known-limitations.md](known-limitations.md) (#1022). A real store uses approach A on Hyperdrive.
+
 | feature | Free DO | Paid DO | WfP | Hyperdrive |
 |---|---|---|---|---|
 | Catalog: shop and product pages | yes (#638); the false 404 (#766): fixed in #770 (merged 2026-11-16); not yet measured live | yes ([results.md](results.md) 2026-11-07, `cochk4`); the false 404 (#766): fixed in #770 (merged 2026-11-16); not yet measured live | the false 404 (#766): fixed in #770 (merged 2026-11-16); not yet measured live | yes ([results.md](results.md) 2026-11-09, `wp-a-lean` 12 of 12) |

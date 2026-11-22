@@ -1,6 +1,6 @@
 # Known limitations
 
-This page lists what does not work yet, or works only with care, so you can plan around it before you build. Each item names its issue, where you can follow it or help. The current paths still run: b-dosql for a store, approach A to scale out. The sb1120 items below are open limits on those paths. See the [docs map](README.md).
+This page lists what does not work yet, or works only with care, so you can plan around it before you build. Each item names its issue, where you can follow it or help. The current paths still run: b-dosql for a blog or a light storefront, approach A on Hyperdrive for a real store and to scale out. The sb1120 items below are open limits on those paths. See the [docs map](README.md).
 
 ## Open from the sb1120 conformance runs (#759)
 
@@ -18,9 +18,39 @@ On `cf759hl` at main `822ab24`, 6 of 10 blocks checkout tests miss the suite's 1
 
 #1221 is open. Every WooCommerce admin page says the plugin is a development version and that its files must be built. The plugin is built. PHP does not see a file the static path serves. The issue records the live read on `cf759hl`, 2026-11-21. There is no results.md row for it yet.
 
-### A hot b-dosql isolate can reset on an admin write (#1022, #1042)
+### WooCommerce on b-dosql: isolates reset under load, a tracked limit (#1022)
 
-#1022 is open. On Paid DO and on WfP, `post-new.php` on a hot isolate answers 500 with `x-isolate-reset: memory` and `x-write-loss`. The latest WfP wp row is 17 of 18 for that reason. The Paid DO local wp row missed one test the same way. The Paid DO and WfP wc rows (2026-11-20) also count this reset, in 23 tests and 16 tests.
+#1022 is open and is a tracked limit, not active work (Conrad's ruling, 2026-11-22). A real store should use approach A on Hyperdrive. On b-dosql, WooCommerce runs PHP in one Durable Object per site. Under load, that object's isolate runs out of memory and the platform resets it: "Durable Object's isolate exceeded its memory limit and was reset." A write in flight on that isolate can be lost (`x-write-loss`), and the client can see "Network connection lost."
+
+**Measured counts.** These come from `cf759a` (WfP, WooCommerce active, engine defaults, `OPCACHE_MC` 64), counted with `tests/load/reuse_score.py` at ddf83b2e (`platform_deaths`: distinct isolates, the death text in any field; a line's request is its `$metadata.requestId`). Lost writes are `write-loss` lines.
+
+| window | requests or tests | isolates that died of memory | lost writes | other |
+|---|---|---|---|---|
+| `reuse_run.py` load, main 56f44937, 2026-11-22 (E3's control) | 328 server requests (perf lines) | 14 (43 per 1000 server requests) | 16 (49 per 1000 server requests) | 61 new isolates per 1000 server requests |
+| wc suite, the same build and session | 113 expected, 110 unexpected, 6 skipped | 110 | 88 | 18 "Network connection lost.", 24 php-fatal |
+| wc suite, main a85fe3db (E1's control) | | 55 | 47 | 17 "Network connection lost.", 15 php-fatal |
+
+The engine code on this path was the same in both suite windows, and they gave 55 and 110 deaths. One suite window is noisy, so the load harness is the measure of record.
+
+**Where the memory goes.** In E3's 23 death isolates, the last completed request held a WebAssembly heap of 103 to 116 MiB (median 112). The write ceiling is 117 to 119 MiB (see the three figures below).
+- **OPcache:** its shared memory is 64 MiB on a store, reserved before the first request.
+- **Not boots:** 22 of the 23 deaths came on a warm request, not on a boot.
+- **The JavaScript inflate burst:** under 2 MiB on those requests.
+- **Not measured:** the rest of the JavaScript heap. The platform gives no reading.
+
+**What was tried.** Each lever had its bars set before its data (#1022).
+
+| lever | result |
+|---|---|
+| Reuse the WebAssembly memory across a recycle (`PHP_MEMORY_REUSE`; the A/B and E1) | FAIL: deaths and lost writes rose; 76% of E1's deaths came 5 to 7.5 s after a reuse reboot |
+| One reused inflate buffer (`LAZY_ARENA`, E3) | FAIL on deaths: 9 against 14, where the bar was half. It is a large latency gain (guest p95 0.38x), parked as E4 |
+| Smaller OPcache, 32 MiB (E5) | stopped at its local pre-check: the heap high-water was higher than at 48 MiB |
+| A smaller boot file set (#1253) | closed: the file set is what WordPress and WooCommerce include; the engine already holds only what PHP opens |
+| OPcache 48 MiB on a store (E6) | queued: the last lever (Conrad, 2026-11-22). Its bars are on #1022 |
+
+E6 is the last lever on this path. After it, b-dosql keeps WooCommerce for a light storefront, and the work moves to the Hyperdrive tiers.
+
+### Parallel REST reads can fail on b-dosql (#1042)
 
 #1042 is open. Parallel REST reads answer 503 with `x-sql-failure`. The same wc rows count that class: 2 tests on Paid DO, about 6 on WfP. No later wc row has re-run those tiers.
 
