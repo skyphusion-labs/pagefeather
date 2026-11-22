@@ -15,7 +15,8 @@ export function rendersInWorker(env) {
 export function placedRenderRequest(req) {
 	const h = new Headers(req.headers);
 	h.set(PAGES_RENDER_HEADER, '1');
-	return new Request(req, { headers: h });
+	// #1277 arm c (experiment): ask that no cache layer on the loopback hop look up or store this request.
+	return new Request(req, { headers: h, cache: 'no-store' });
 }
 
 export function isPlacedRender(req) {
