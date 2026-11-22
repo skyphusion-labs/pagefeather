@@ -4577,7 +4577,7 @@ const site = {
 		}
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		// #1359 measure first: the operator-only cancel probe (cancel-probe.mjs; CANCEL_PROBE=on and the spike token).
-		if (url.pathname === CANCEL_PROBE_PATH && cancelProbeAllowed(env, spikeOk)) return cancelProbe(url, ctx, { dbOneShot: dbHandler && dbHandler.oneShot ? (sql) => dbHandler.oneShot(env, sql) : null, dbRun: dbHandler ? async (sql) => { dbHandler.reset(); try { return await dbHandler.query(env, { mysql: sql }); } finally { await dbHandler.end(); } } : null });
+		if (url.pathname === CANCEL_PROBE_PATH && cancelProbeAllowed(env, spikeOk)) return cancelProbe(url, ctx, { iso: ISOLATE_ID, withLock: (fn) => withPhp(fn), dbOneShot: dbHandler && dbHandler.oneShot ? (sql) => dbHandler.oneShot(env, sql) : null, dbRun: dbHandler ? async (sql) => { dbHandler.reset(); try { return await dbHandler.query(env, { mysql: sql }); } finally { await dbHandler.end(); } } : null });
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		// #1152: the Worker's build and the cron object's (its /_build answers from the object's own code), so a deploy can
 		// tell whether the cron object moved to the new version. Spike token (the gate above).

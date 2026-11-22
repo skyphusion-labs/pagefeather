@@ -44,3 +44,12 @@ test('#1359 index.js: the route is checked after the spike-token gate, before th
 	assert.ok(route > serve.indexOf('const spikeOk ='), 'after the spike token is read');
 	assert.ok(route < serve.indexOf("if (url.pathname.startsWith('/_') && !spikeOk)"), 'before the /_ 403 (a stranger still gets 403 or 404)');
 });
+test('#1363 recovery check: hold=lock runs the await inside the lock, logs locked, and every line carries iso', async () => {
+	const m = await import('../cancel-probe.mjs');
+	const lines = []; let locked = 0;
+	const withLock = async (fn) => { locked++; return fn(); };
+	await m.cancelProbe(new URL('https://x.example/_cancel-probe?id=l1&kind=timer&hold=lock&ms=5'), fakeCtx(), { log: (o) => lines.push(o), withLock, iso: 'abc123' });
+	assert.equal(locked, 1, 'inside the lock');
+	assert.deepEqual(lines.map((l) => l.phase), ['start', 'locked', 'fired', 'answered']);
+	assert.ok(lines.every((l) => l.iso === 'abc123' && l.hold === 'lock' && typeof l.at === 'number'));
+});

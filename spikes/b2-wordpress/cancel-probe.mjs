@@ -18,17 +18,21 @@ export function probeMs(raw) {
 	return Math.min(20000, Math.max(1000, Math.round(n)));
 }
 
-export async function cancelProbe(url, ctx, { log = (o) => console.log(JSON.stringify(o)), dbOneShot = null, dbRun = null } = {}) {
+export async function cancelProbe(url, ctx, { log = (o) => console.log(JSON.stringify(o)), dbOneShot = null, dbRun = null, iso = null, withLock = null } = {}) {
 	const id = String(url.searchParams.get('id') || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'none';
 	// rundb (the #1363 live check only): SELECT SLEEP through mysqlQuery, the run path PHP uses, on a run connection.
 	const k = url.searchParams.get('kind');
 	const kind = k === 'db' || k === 'rundb' ? k : 'timer';
-	const hold = url.searchParams.get('hold') === 'waituntil' ? 'waituntil' : 'request';
+	// lock (the #1363 recovery check): the await runs inside the isolate's PHP lock (withPhp), so a second probe on the same
+	// isolate shows by its 'locked' time when the first one let the lock go.
+	const hv = url.searchParams.get('hold');
+	const hold = hv === 'waituntil' || hv === 'lock' ? hv : 'request';
 	const ms = probeMs(url.searchParams.get('ms'));
 	const t0 = Date.now();
-	const line = (phase, extra = {}) => log({ m: 'cancel-probe', phase, id, kind, hold, ms, atMs: Date.now() - t0, ...extra });
+	const line = (phase, extra = {}) => log({ m: 'cancel-probe', phase, id, kind, hold, ms, iso, at: Date.now(), atMs: Date.now() - t0, ...extra });
 	line('start');
-	const work = (async () => {
+	const body = async () => {
+		if (hold === 'lock') line('locked');
 		let err = null;
 		try {
 			if (kind === 'rundb') {
@@ -46,7 +50,8 @@ export async function cancelProbe(url, ctx, { log = (o) => console.log(JSON.stri
 			err = String((e && e.message) || e).slice(0, 120);
 		}
 		line('fired', err ? { error: err } : {});
-	})();
+	};
+	const work = hold === 'lock' && withLock ? withLock(body) : body();
 	if (hold === 'waituntil' && ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(work);
 	await work;
 	line('answered');
