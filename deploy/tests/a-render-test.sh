@@ -211,5 +211,29 @@ render "$T/w3.toml" RENDER_WFP=1 RENDER_SCRIPT=site-pfa-render CUSTOM_DOMAIN=sho
 ok "#1319 RENDER_WFP=1 refuses CUSTOM_DOMAIN (rc $rc)" "$([ $rc != 0 ] && grep -q 'no Custom Domain' "$T/render.err" && echo 1 || echo 0)"
 render "$T/w4.toml" RENDER_WFP=1 RENDER_SCRIPT=site-pfa-render PLACEMENT=; rc=$?
 ok "#1319 RENDER_WFP=1 still refuses a missing PLACEMENT for an external MySQL (rc $rc)" "$([ $rc != 0 ] && echo 1 || echo 0)"
+echo "#1339 (#837): approach A binds the account's purge budget like b-dosql: deploy.sh decides it for a, and render_conf writes the binding"
+# budgets <toml>: every PURGE_BUDGET entry of [[durable_objects.bindings]], as name/class/script, one per line.
+budgets() { python3 -I -c 'import sys, tomllib
+for b in tomllib.load(open(sys.argv[1], "rb")).get("durable_objects", {}).get("bindings", []):
+    if b.get("name") == "PURGE_BUDGET": print(b.get("name"), b.get("class_name"), b.get("script_name"))' "$1"; }
+want='PURGE_BUDGET PurgeBudget pf-purge-budget'
+for arm in "default (cron on, pool off)|" "pool on|PHP_OVERFLOW=1" "cron off|A_CRON=0"; do
+	label=${arm%%|*}; set -- ${arm#*|}
+	render "$T/pb1.toml" PURGE_BUDGET_BIND=1 "$@"; rc=$?
+	ok "#1339 variant a, $label, PURGE_BUDGET_BIND=1: exactly one PURGE_BUDGET binding, class PurgeBudget, script pf-purge-budget (rc $rc)" "$([ $rc = 0 ] && [ "$(budgets "$T/pb1.toml")" = "$want" ] && echo 1 || echo 0)"
+	render "$T/pb0.toml" "$@"; rc=$?
+	ok "#1339 variant a, $label, unset: no PURGE_BUDGET binding (rc $rc)" "$([ $rc = 0 ] && [ -z "$(budgets "$T/pb0.toml")" ] && echo 1 || echo 0)"
+done
+set --
+render "$T/pbd.toml" VARIANT=b-dosql PURGE_BUDGET_BIND=1; rc=$?
+ok "#1339 b-dosql with PURGE_BUDGET_BIND=1 still binds it once (rc $rc)" "$([ $rc = 0 ] && [ "$(budgets "$T/pbd.toml")" = "$want" ] && echo 1 || echo 0)"
+# deploy.sh's decision: variant a and b-dosql ask budget.sh (purge_budget_decide); every other variant deploys without it.
+dline=$(grep -nE 'purge_budget_decide "deploy\.sh \$NAME"' "$ROOT/deploy/deploy.sh")
+ok "#1339 deploy.sh decides the purge budget for variant a and b-dosql, and only there" "$(printf '%s\n' "$dline" | grep -qE 'case "\$VARIANT" in a\|b-dosql\) purge_budget_decide "deploy\.sh \$NAME" ;; \*\) PURGE_BUDGET_BIND=0 ;; esac' && echo 1 || echo 0)"
+# #1339 with #1319: deploy/wfp's kind a site uses this same render (RENDER_WFP=1), so it carries the binding too.
+render "$T/pbw1.toml" RENDER_WFP=1 RENDER_SCRIPT=site-pfa-render NAMESPACE=wp-wfp PURGE_BUDGET_BIND=1; rc=$?
+ok "#1339 the WfP kind a render (RENDER_WFP=1) with PURGE_BUDGET_BIND=1: exactly one PURGE_BUDGET binding (rc $rc)" "$([ $rc = 0 ] && [ "$(budgets "$T/pbw1.toml")" = "$want" ] && echo 1 || echo 0)"
+render "$T/pbw0.toml" RENDER_WFP=1 RENDER_SCRIPT=site-pfa-render NAMESPACE=wp-wfp; rc=$?
+ok "#1339 the WfP kind a render, unset: no PURGE_BUDGET binding (rc $rc)" "$([ $rc = 0 ] && [ -z "$(budgets "$T/pbw0.toml")" ] && echo 1 || echo 0)"
 [ "$fails" = 0 ] && echo "a-render: all checks pass" || echo "a-render: $fails failing check(s)"
 exit $((fails > 0))
