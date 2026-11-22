@@ -260,7 +260,7 @@ On approach A (Hyperdrive), each MySQL query is bounded.
 
 | setting | default | what it bounds |
 |---|---|---|
-| `DB_QUERY_TIMEOUT_MS` | `30000` | How long one query may take, in milliseconds (1 to 600,000). |
+| `DB_QUERY_TIMEOUT_MS` | `30000` (unset renders nothing; the engine default stands) | How long one query may take, in milliseconds. Digits only, 1 to 600,000. Rendered when set, on variant `a`, on `deploy/wfp` kind a, and on one-click. A bad value stops the deploy and names this setting. Recorded: a later deploy that leaves it out is refused as a difference. |
 
 **On the bound:**
 - the connection is destroyed and never reused;
@@ -275,7 +275,7 @@ On approach A (Hyperdrive), each MySQL query is bounded.
 
 **Why 30 s:** in three full WooCommerce suite runs (12,175 requests), no request came near it. The highest average per query in any request was 214 ms. The longest requests (product batches, 46 to 49 s of database time) are thousands of queries of about 14 ms each. Those totals cannot rule out one long query inside a batch, which is why the bound can be raised.
 
-**Setting it:** the Worker reads `DB_QUERY_TIMEOUT_MS` as a plain variable. `deploy.sh`, `deploy/wfp` and the one-click provisioner do not render it yet, so a site runs the 30 s default until they do (#1359).
+**Setting it:** set `DB_QUERY_TIMEOUT_MS` to the number of milliseconds (digits only, 1 to 600,000). `deploy.sh` (variant `a`), `deploy/wfp` (kind a) and one-click render it as a plain variable. Unset renders nothing, so the engine's 30 s default stands. A value outside that range stops the deploy and names `DB_QUERY_TIMEOUT_MS`. The value is recorded with the site's other inputs. A later deploy that leaves it out is refused as a difference (`REPLACE_INPUTS=1` replaces the record on purpose; on `deploy/wfp`, `DROP_SETTINGS=DB_QUERY_TIMEOUT_MS` drops it).
 
 ## When a PHP object does not answer in time (#703, #708)
 

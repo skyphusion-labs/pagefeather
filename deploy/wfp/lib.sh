@@ -614,6 +614,11 @@ render_user() { # render_user <site> <origin>
   wp_cli_local_seam_check || return 2
   # #1319: a kind a site is approach A: the SAME render deploy.sh uses for variant a (render-conf.sh, RENDER_WFP=1).
   if [ "${SITE_KIND:-b-dosql}" = a ]; then render_user_a "$@"; return $?; fi
+  # #1364: the per-query bound is the Hyperdrive bridges. A b-dosql site has no such query.
+  if [ -n "${DB_QUERY_TIMEOUT_MS:-}" ]; then
+    echo "DB_QUERY_TIMEOUT_MS is for a kind a site (approach A), not b-dosql" >&2
+    return 2
+  fi
   local s=$1 origin=$2 mail_binding mail_vars http_allow ts_vars php_env
   # WFP_PHP_ENV (#434): a measurement build may set USE_ZEND_ALLOC=1 so memory_get_usage reads
   # Zend's own numbers. JSON only, no single quote (it sits in a TOML literal string).
@@ -962,7 +967,7 @@ use_recorded_inputs() {
 # unset is the default list, and set, including empty, is that exact list. site update
 # remembers which one this run is, in http_allow_mode, before local -x collapses unset
 # into empty. Empty denies every host, so a drop sets the mode to unset.
-SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS TURNSTILE_REGISTER TURNSTILE_WOO_REGISTER TURNSTILE_LOSTPASSWORD MAIL_FROM MAIL_FROM_NAME MAIL_ALLOWED_TO PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE PAGE_CACHE_TTL OBSERVABILITY SITE_TITLE"
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS TURNSTILE_REGISTER TURNSTILE_WOO_REGISTER TURNSTILE_LOSTPASSWORD MAIL_FROM MAIL_FROM_NAME MAIL_ALLOWED_TO PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE PAGE_CACHE_TTL OBSERVABILITY SITE_TITLE DB_QUERY_TIMEOUT_MS"
 # The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export

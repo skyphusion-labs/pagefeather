@@ -72,6 +72,8 @@
 
 # shellcheck source=lib/memory-reuse.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/memory-reuse.sh" # #603: one rule with deploy/wfp/lib.sh
+# shellcheck source=SCRIPTDIR/db-query-timeout.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/db-query-timeout.sh" # #1364: DB_QUERY_TIMEOUT_MS
 # shellcheck source=SCRIPTDIR/lib/remote-packs.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/remote-packs.sh" # #598: the b-dosql packs, one rule with deploy/wfp/lib.sh
 
@@ -85,10 +87,12 @@ a_settings_check() {
     done
   fi
   if [ "$variant" != a ]; then
-    for v in OPCACHE_A A_CLIENT A_CRON PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD PHP_OVERFLOW_DEPTH MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE OBJECT_CACHE_L2; do
+    for v in OPCACHE_A A_CLIENT A_CRON PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD PHP_OVERFLOW_DEPTH MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE OBJECT_CACHE_L2 DB_QUERY_TIMEOUT_MS; do
       [ -z "${!v:-}" ] || { echo "$v is for variant a only (deploy/wfp has its own settings for b-dosql)" >&2; return 2; }
     done
   fi
+  # #1364: the per-query bound. Unset keeps the engine's 30 s. A bad value stops the deploy.
+  if [ "$variant" = a ]; then db_query_timeout_check || return 2; fi
   # #1022: the recycle line and memory reuse are engine settings, so b-dosql and b-do take them too, through the
   # same rules deploy/wfp uses (lib/memory-reuse.sh). c1 runs no PHP runtime, so it refuses them.
   if [ "$variant" != a ] && [ "$variant" != b-dosql ] && [ "$variant" != b-do ]; then

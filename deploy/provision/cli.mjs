@@ -21,7 +21,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { provisionSite, removeNamespaceSite } from './provision.mjs';
 import { SITE_NAME_RE, isCallerReservedName, genSecret } from './shared.mjs';
-import { bDosqlBindings, bDosqlSecrets, bDosqlResourceCreateOps, aBindings, mediaBucketName, ocKvNamespaceName, analyticsDatasetName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs, aCacheInputs } from './wp-site-config.mjs';
+import { bDosqlBindings, bDosqlSecrets, bDosqlResourceCreateOps, aBindings, mediaBucketName, ocKvNamespaceName, analyticsDatasetName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs, aCacheInputs, dbQueryTimeoutInputs } from './wp-site-config.mjs';
 import { addCustomHostname, getCustomHostnameStatus, scriptExists } from './ops.mjs';
 import { updateSite, readSite } from './registry.mjs';
 import { PLACEMENT_REGION_RE } from './server-config.mjs';
@@ -210,6 +210,7 @@ async function buildCfg(parsed, env) {
   pageCacheProductTtl(pageCacheInputs(env));
   objectTimeInputs(env); // #715 review3 6: refused here too, before the bundle is read
   aCacheInputs(env); // #296: a bad cache value is refused before any IO too
+  dbQueryTimeoutInputs(env); // #1364: a bad query bound is refused before any IO too
   const { kind, name } = parsed;
   const namespace = env.WFP_NAMESPACE || 'wp-wfp';
   const kvId = env.WFP_KV_ID;
@@ -302,6 +303,7 @@ async function buildCfg(parsed, env) {
         ...pageCacheInputs(env),
         ...objectTimeInputs(env),
         ...aCacheInputs(env), // #296: the escape hatch for the two cache defaults
+        ...dbQueryTimeoutInputs(env), // #1364
       }),
       // Approach A runs PHP in the WORKER: NO Durable Object, so NO SQLite
       // migration (an empty class list leaves the migration unset in ops).

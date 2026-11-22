@@ -106,6 +106,7 @@ jobs:
           bash deploy/tests/media-guard-test.sh
           bash deploy/tests/cron-schedules-test.sh
           bash deploy/tests/recorded-inputs-test.sh
+          bash deploy/tests/db-query-timeout-test.sh
           bash deploy/tests/custom-domain-test.sh
           bash deploy/tests/cron-version-readback-test.sh
           bash spikes/b2-wordpress/tests/trace-filter-test.sh
@@ -724,6 +725,7 @@ jobs:
           node deploy/provision/tests/memory-reuse-provision-test.mjs
           node deploy/provision/tests/page-cache-product-test.mjs
           node deploy/provision/tests/object-time-test.mjs
+          node deploy/provision/tests/db-query-timeout-test.mjs
           node deploy/provision/tests/a-cache-inputs-test.mjs
           node deploy/provision/tests/wp-site-config-test.mjs
           node deploy/provision/tests/descriptor-table-test.mjs

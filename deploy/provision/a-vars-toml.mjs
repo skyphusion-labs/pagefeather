@@ -10,7 +10,7 @@
 // `vars` leaves out the lines deploy.sh already writes for every variant (PHP_ENV, SITE_ORIGIN, the mail
 // lines, HYPERDRIVE_SQL_MODE); any OTHER var aVars adds is printed, so a new setting reaches deploy.sh too.
 // product-ttl is that same module's pageCacheProductTtl, for b-do, b-dosql and a (not only approach A).
-import { aVars, aBindings, pageCacheInputs, pageCacheProductTtl, opcacheStoreMc } from './wp-site-config.mjs';
+import { aVars, aBindings, pageCacheInputs, pageCacheProductTtl, opcacheStoreMc, dbQueryTimeoutInputs } from './wp-site-config.mjs';
 
 const OWN = new Set(['PHP_ENV', 'SITE_ORIGIN', 'MAIL_FROM', 'MAIL_FROM_NAME', 'HYPERDRIVE_SQL_MODE']);
 const line = (k, v) => `${k} = ${JSON.stringify(String(v))}`;
@@ -19,7 +19,11 @@ if (cmd === 'vars') {
 	// #686: OBJECT_CACHE_VERSIONS=1 (checked by a-settings.sh) is aVars' objectCacheVersions, as on the provisioning path.
 	// #296: both are on unless set off (OBJECT_CACHE_VERSIONS=0, WOO_HPOS_CACHE=off; a-settings.sh checked the values).
 	// #1078: OBJECT_CACHE_L2=1 turns the KV L2 on (off by default; a-settings.sh checked the value).
-	const vars = aVars({ siteOrigin: process.env.SITE_ORIGIN, objectCacheVersions: process.env.OBJECT_CACHE_VERSIONS !== '0', wooHposCache: process.env.WOO_HPOS_CACHE !== 'off', objectCacheL2: process.env.OBJECT_CACHE_L2 === '1' }); // #697
+	// #1364: DB_QUERY_TIMEOUT_MS, when set. A bad value stops the render and names the setting.
+	let timeout;
+	try { timeout = dbQueryTimeoutInputs(process.env); }
+	catch (e) { console.error(e.message); process.exit(2); }
+	const vars = aVars({ siteOrigin: process.env.SITE_ORIGIN, objectCacheVersions: process.env.OBJECT_CACHE_VERSIONS !== '0', wooHposCache: process.env.WOO_HPOS_CACHE !== 'off', objectCacheL2: process.env.OBJECT_CACHE_L2 === '1', ...timeout }); // #697
 	for (const v of vars) if (!OWN.has(v.name)) console.log(line(v.name, v.text));
 } else if (cmd === 'kv') {
 	if (!/^[A-Za-z0-9_-]{1,64}$/.test(arg || '')) { console.error('a-vars-toml: kv needs the namespace id (Terraform output oc_kv_id)'); process.exit(2); }
