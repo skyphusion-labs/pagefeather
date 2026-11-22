@@ -1,6 +1,6 @@
 # Start here: put a WordPress site on Cloudflare
 
-**The short version.** Pagefeather runs WordPress on your own Cloudflare account. Today you install it from a terminal: you copy and paste about 10 commands. There is no one-click installer for a single site yet ([#401](https://github.com/skyphusion-labs/pagefeather/issues/401)). If you have used cPanel and SSH, or a LAMP server, you can do this. On our test machine the commands took about 2 minutes. This page has three parts: how to install, how to log in, and what the limits are.
+**The short version.** Pagefeather runs WordPress on your own Cloudflare account. Today you install it from a terminal: you set up Cloudflare in 6 steps in your browser, then copy and paste 11 commands on macOS or 15 on Linux. There is no one-click installer for a single site yet ([#401](https://github.com/skyphusion-labs/pagefeather/issues/401)). If you have used cPanel and SSH, or a LAMP server, you can do this. On our test machine the commands took about 2 minutes. This page has three parts: how to install, how to log in, and what the limits are.
 
 We use two names on this page:
 
@@ -40,6 +40,8 @@ brew install git node python unzip
 brew tap hashicorp/tap
 brew install hashicorp/tap/terraform
 ```
+
+We checked these steps on Linux. The macOS lines are not yet tested on a fresh Mac.
 
 On **Ubuntu or Debian** (and on Windows in WSL):
 
