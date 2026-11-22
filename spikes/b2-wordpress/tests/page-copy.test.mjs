@@ -76,6 +76,12 @@ test('busyAnswerFor: a busy 503 for the miss class becomes a 429 with the same b
 	assert.equal(a.headers.get('x-overloaded'), '1');
 	assert.equal(await a.text(), 'The site is busy. Please try again in a few seconds.\n');
 });
+test('busyAnswerFor: every request in the miss class gets the 429, not only a cookie (authorization, an operator)', () => {
+	for (const [label, h] of [['authorization', { authorization: 'Basic eDp5' }], ['operator', { 'x-spike-token': 'anything' }], ['upgrade', { upgrade: 'websocket' }]]) {
+		const { req, url } = mk('/shop/', { h });
+		assert.equal(busyAnswerFor(req, url, ENV, shed()).status, 429, label);
+	}
+});
 test('busyAnswerFor: everything else is returned untouched (the same object)', () => {
 	const guest = mk('/shop/'), rest = mk('/wp-json/x', { cookie: CART }), cookie = mk('/shop/', { cookie: CART });
 	for (const [label, r, resp] of [
