@@ -2859,6 +2859,14 @@ async function selfFetchFromCache(url, method, headers, signal) {
 	console.log(JSON.stringify({ m: 'self-fetch', iso: ISOLATE_ID, method, path: url.pathname, outcome: 'cache-hit', status: r.status, ms: Date.now() - t0, parent: runCallId }));
 	return r;
 }
+// #1157 after #1298: the 'cache' route (no pool, the Pages export): the cached copy, or the refusal a no-pool hop had
+// before, logged on the same self-fetch line and thrown, so PHP gets the same error as from the hop check.
+async function selfFetchCacheOrRefuse(url, method, headers, signal, missWhy) {
+	const r = await selfFetchFromCache(url, method, headers, signal);
+	if (r) return r;
+	console.log(JSON.stringify({ m: 'self-fetch', outcome: 'refused', why: missWhy, method, path: url.pathname, iso: ISOLATE_ID, parent: runCallId }));
+	throw new Error(missWhy);
+}
 async function selfFetchOnPool(url, method, headers, body, signal) {
 	const ovs = overflowSettings(ENV);
 	const callId = crypto.randomUUID();
@@ -2893,7 +2901,7 @@ function httpRefusal(url) {
 // #1157: one hop's route ('pool', 'out' or 'refuse', selfFetchRoute's) and its refusal, or why null to send it: the
 // site's own host runs on a pool object or is refused. #1226 logs only a 'refuse' route as a refused self-fetch.
 function httpHop(url, ovs) {
-	const self = selfFetchRoute({ sameHost: isSelfHost(url), inObject: Boolean(ocCtx && ocCtx.inObject), overflowed: Boolean(ocCtx && ocCtx.overflowed), poolAvailable: selfFetchPoolAvailable(ENV, ovs), capped: overHeld(ovs, ovHeld) });
+	const self = selfFetchRoute({ sameHost: isSelfHost(url), inObject: Boolean(ocCtx && ocCtx.inObject), overflowed: Boolean(ocCtx && ocCtx.overflowed), poolAvailable: selfFetchPoolAvailable(ENV, ovs), capped: overHeld(ovs, ovHeld), cacheAvailable: Boolean(ocCtx && !ocCtx.inObject && ocCtx.exports && ocCtx.exports.Pages) });
 	const why = self.route === 'refuse' ? self.why : self.route === 'out' ? httpRefusal(url) : (url.protocol === 'http:' || url.protocol === 'https:' ? null : 'only http and https');
 	return { route: self.route, why };
 }
@@ -2954,7 +2962,7 @@ async function httpOpRun(op) {
 				out = { error: why };
 				return out;
 			}
-			res = self.route === 'pool' ? (await selfFetchFromCache(url, method, headers, signal)) || (await selfFetchOnPool(url, method, headers, body, signal)) : await fetch(url, { method, headers, body, redirect: 'manual', signal });
+			res = self.route === 'pool' ? (await selfFetchFromCache(url, method, headers, signal)) || (await selfFetchOnPool(url, method, headers, body, signal)) : self.route === 'cache' ? await selfFetchCacheOrRefuse(url, method, headers, signal, self.missWhy) : await fetch(url, { method, headers, body, redirect: 'manual', signal });
 			const loc = res.headers.get('location');
 			if ([301, 302, 303, 307, 308].includes(res.status) && loc && (op.redirection || 0) > 0) {
 				// As Requests does: redirection 0 returns the redirect itself; past the count is an error.
