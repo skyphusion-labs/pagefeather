@@ -19,7 +19,9 @@ For each site <s>:
   object-cache L2 namespace (kv_namespace named OC_KV), its own durable-email
   queue (queue with queue_name wp-wfp-<s>-email), its own pageview-analytics
   dataset (analytics_engine with dataset wp-wfp-<s>-analytics), and its own
-  Vectorize search index (vectorize with index_name wp-wfp-<s>-search). Any other binding type (D1, a service, a dispatch
+  Vectorize search index (vectorize with index_name wp-wfp-<s>-search). A kind a site (#1319) may also bind its
+  own Hyperdrive config (hyperdrive named HYPERDRIVE, the id of the config named wp-wfp-<s>), and its OC_KV must
+  then be its own namespace (the id of the namespace titled wp-wfp-<s>-oc). Any other binding type (D1, a service, a dispatch
   namespace, a foreign queue or KV namespace, ...) fails.
 - the dispatcher wp-<s> (GET .../workers/scripts/wp-<s>/settings) may bind
   only: the site map (kv_namespace SITES, id KV_ID) and the namespace
@@ -38,7 +40,7 @@ import datetime, json, os, re, sys, urllib.error, urllib.request
 
 ENV = os.environ
 PURGE_BUDGET_SCRIPT = "pf-purge-budget"  # #699 part B: deploy/purge-budget, one per account
-USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text", "browser", "ai", "kv_namespace", "queue", "analytics_engine", "vectorize"}
+USER_OK = {"hyperdrive", "r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text", "browser", "ai", "kv_namespace", "queue", "analytics_engine", "vectorize"}
 # TURNSTILE_SECRET: the site's own Turnstile secret, set only when the run has it (#340).
 SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN", "TURNSTILE_SECRET", "SNAPSHOT_TOKEN", "INVOICE_TOKEN"}  # SNAPSHOT_TOKEN: #533; INVOICE_TOKEN: #765 (PDF_INVOICE=on)
 
@@ -87,8 +89,53 @@ def listed(d, key=None):
     return r if isinstance(r, list) else None
 
 
+def own_hyperdrive(s):
+    """#1319: the id of the Hyperdrive config named wp-wfp-<s>, or None when there is none or a page is unread.
+    #1323: every page (the list pages, 20 by default)."""
+    page, pages = 1, 1
+    while page <= pages:
+        st, d = api("/hyperdrive/configs?per_page=100&page=%d" % page)
+        if st != 200 or not d or not isinstance(d.get("result"), list):
+            return None
+        for c in d["result"]:
+            if isinstance(c, dict) and c.get("name") == "wp-wfp-%s" % s:
+                return c.get("id")
+        t = (d.get("result_info") or {}).get("total_pages", 1)
+        if not isinstance(t, int) or not 1 <= t <= 100:
+            return None
+        pages, page = t, page + 1
+    return None
+
+
+def own_oc_kv(s):
+    """#1319: the id of the KV namespace titled wp-wfp-<s>-oc, or None."""
+    for page in range(1, 51):
+        st, d = api("/storage/kv/namespaces?per_page=100&page=%d" % page)
+        if st != 200 or not d or not isinstance(d.get("result"), list):
+            return None
+        for x in d["result"]:
+            if isinstance(x, dict) and x.get("title") == "wp-wfp-%s-oc" % s:
+                return x.get("id")
+        if len(d["result"]) < 100:
+            return None
+    return None
+
+
 def check_user(s, bs):
     bad = []
+    hd = [b for b in bs if b.get("type") == "hyperdrive"]
+    if hd:
+        # A kind a site: its one Hyperdrive config, and its own object cache namespace, both by id.
+        want = own_hyperdrive(s)
+        for b in hd:
+            if b.get("name") != "HYPERDRIVE" or not want or b.get("id") != want:
+                bad.append("site-%s binds the Hyperdrive config %s as %s, not its own wp-wfp-%s" % (s, b.get("id"), b.get("name"), s))
+        kv = [b for b in bs if b.get("type") == "kv_namespace"]
+        if kv:
+            wkv = own_oc_kv(s)
+            for b in kv:
+                if not wkv or b.get("namespace_id") != wkv:
+                    bad.append("site-%s binds the kv_namespace %s, not its own wp-wfp-%s-oc" % (s, b.get("namespace_id"), s))
     for b in bs:
         t, n = b.get("type"), b.get("name")
         if t not in USER_OK:

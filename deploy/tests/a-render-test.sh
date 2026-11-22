@@ -184,5 +184,32 @@ for v in b-dosql b-do; do
 	render "$T/m0-$v.toml" VARIANT=$v; rc=$?
 	ok "#1022 $v unset renders neither (the defaults unchanged) (rc $rc)" "$([ $rc = 0 ] && ! grep -qE '^(RECYCLE_WASM_MIB|PHP_MEMORY_REUSE|BOOT_GATE) = ' "$T/m0-$v.toml" && echo 1 || echo 0)"
 done
+echo "#1319: RENDER_WFP=1, deploy/wfp's kind a site: deploy.sh's variant a lines from the same render, minus four"
+# The ONE source (lib.sh render_user_a calls render_conf): the WfP render must equal deploy.sh's, setting by setting,
+# except the name (site-<name>), workers_dev (none in a namespace), [triggers] (a Cron Trigger never fires on a
+# namespace script, #1310) and [observability] (deploy/wfp appends its own). Any other difference is drift.
+render "$T/dep.toml" A_CRON=1; rc1=$?
+render "$T/wfp.toml" A_CRON=1 RENDER_WFP=1 RENDER_SCRIPT=site-pfa-render NAMESPACE=wp-wfp; rc2=$?
+python3 -I "$HERE/canon.py" "$T/dep.toml" | grep -vE '^- (name|workers_dev) = |^triggers |^observability' > "$T/dep.c"
+python3 -I "$HERE/canon.py" "$T/wfp.toml" | grep -vE '^- name = |^vars CRON_SELF_TICK = "on"$' > "$T/wfp.c"
+ok "#1319 both render (rc $rc1, $rc2)" "$([ $rc1 = 0 ] && [ $rc2 = 0 ] && echo 1 || echo 0)"
+if diff -u "$T/dep.c" "$T/wfp.c" > "$T/wd"; then ok "#1319 the WfP render is deploy.sh's, minus name, workers_dev, [triggers] and [observability]" 1
+else sed 's/^/        /' "$T/wd"; ok "#1319 the WfP render is deploy.sh's minus the four (above: - deploy.sh, + deploy/wfp)" 0; fi
+ok "#1319 the WfP render names the namespace script site-pfa-render" "$(grep -qx 'name = "site-pfa-render"' "$T/wfp.toml" && echo 1 || echo 0)"
+ok "#1319 the WfP render has no workers_dev, no [triggers], no [observability]" "$(! grep -qE '^(workers_dev|\[triggers\]|\[observability)' "$T/wfp.toml" && echo 1 || echo 0)"
+ok "#1319 the WfP render keeps the Hyperdrive binding and the placement region" "$(grep -qx 'binding = "HYPERDRIVE"' "$T/wfp.toml" && grep -qx 'region = "aws:us-west-2"' "$T/wfp.toml" && echo 1 || echo 0)"
+ok "#1310 the WfP render self-ticks the cron (CRON_SELF_TICK on, with A_CRON on and the PhpRuntime binding)" "$(grep -qx 'CRON_SELF_TICK = "on"' "$T/wfp.toml" && grep -qx 'A_CRON = "on"' "$T/wfp.toml" && grep -qx 'class_name = "PhpRuntime"' "$T/wfp.toml" && echo 1 || echo 0)"
+ok "#1310 deploy.sh's render never self-ticks (it keeps its Cron Trigger)" "$(! grep -q CRON_SELF_TICK "$T/dep.toml" && echo 1 || echo 0)"
+render "$T/wfp0.toml" A_CRON=0 RENDER_WFP=1 RENDER_SCRIPT=site-pfa-render; rc=$?
+ok "#1310 A_CRON=0 on WfP: no self-tick either (rc $rc)" "$([ $rc = 0 ] && ! grep -q CRON_SELF_TICK "$T/wfp0.toml" && echo 1 || echo 0)"
+ok "#1319 control: deploy.sh's render HAS the cron trigger the WfP render drops" "$(grep -qx '\[triggers\]' "$T/dep.toml" && grep -qx 'workers_dev = true' "$T/dep.toml" && echo 1 || echo 0)"
+render "$T/w1.toml" RENDER_WFP=1 RENDER_SCRIPT=site-pfa-render VARIANT=b-dosql; rc=$?
+ok "#1319 RENDER_WFP=1 refuses a variant other than a (rc $rc)" "$([ $rc != 0 ] && grep -q 'variant a only' "$T/render.err" && echo 1 || echo 0)"
+render "$T/w2.toml" RENDER_WFP=1; rc=$?
+ok "#1319 RENDER_WFP=1 refuses a missing RENDER_SCRIPT (rc $rc)" "$([ $rc != 0 ] && grep -q 'needs RENDER_SCRIPT' "$T/render.err" && echo 1 || echo 0)"
+render "$T/w3.toml" RENDER_WFP=1 RENDER_SCRIPT=site-pfa-render CUSTOM_DOMAIN=shop.example.com; rc=$?
+ok "#1319 RENDER_WFP=1 refuses CUSTOM_DOMAIN (rc $rc)" "$([ $rc != 0 ] && grep -q 'no Custom Domain' "$T/render.err" && echo 1 || echo 0)"
+render "$T/w4.toml" RENDER_WFP=1 RENDER_SCRIPT=site-pfa-render PLACEMENT=; rc=$?
+ok "#1319 RENDER_WFP=1 still refuses a missing PLACEMENT for an external MySQL (rc $rc)" "$([ $rc != 0 ] && echo 1 || echo 0)"
 [ "$fails" = 0 ] && echo "a-render: all checks pass" || echo "a-render: $fails failing check(s)"
 exit $((fails > 0))

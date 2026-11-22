@@ -19,6 +19,7 @@ The per-plan Cloudflare limits that decide the matrix in the root [README](../..
 | D1 queries per Worker invocation | 50 | 1,000 | [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) |
 | Durable Objects | SQLite storage only, 5 GB per account, 100,000 requests a day | 10 GB per object, no account limit | [Durable Objects limits](https://developers.cloudflare.com/durable-objects/platform/limits/), [pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) |
 | Hyperdrive queries | 100,000 a day | No limit | [Hyperdrive pricing](https://developers.cloudflare.com/hyperdrive/platform/pricing/) |
+| Hyperdrive configurations | 10 per account | 25 per account | [Hyperdrive limits](https://developers.cloudflare.com/hyperdrive/platform/limits/) (read 2026-11-22). A `deploy/wfp` kind a site uses one (#1319), so a Paid account holds about 25 approach A sites, minus its other configurations (5 on the reference account, 2026-11-22). |
 | Hyperdrive origin connections | About 20 per configuration | About 100 per configuration | [Hyperdrive limits](https://developers.cloudflare.com/hyperdrive/platform/limits/) |
 | KV writes to different keys | 1,000 a day | No limit | [KV limits](https://developers.cloudflare.com/kv/platform/limits/) |
 | KV reads | 100,000 a day | No limit | [KV limits](https://developers.cloudflare.com/kv/platform/limits/) |

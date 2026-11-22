@@ -178,7 +178,9 @@ out=$(cnt "$T/ocbad.zip"); rc=$?
 ok "an unreadable cache fails (rc $rc)" "$([ $rc != 0 ] && grep -qF 'not a readable zip' <<<"$out" && echo 1 || echo 0)"
 out=$(cnt "$T/missing.zip"); rc=$?
 ok "a missing cache fails (rc $rc)" "$([ $rc != 0 ] && grep -qF 'not a readable zip' <<<"$out" && echo 1 || echo 0)"
-ok "deploy.sh counts the cache right after opcache-a.sh" "$(awk '/opcache-a.sh > "\$ALOG"/ {a=NR} /a_opcache_count build\/opcache.zip/ {c=NR} END {print (a && c && c > a && c - a < 6) ? 1 : 0}' "$ROOT/deploy/deploy.sh")"
+# #1319: the primed build moved, unchanged, into a-settings.sh a_build_primed (deploy.sh and deploy/wfp kind a share it).
+ok "a_build_primed counts the cache right after opcache-a.sh" "$(awk '/opcache-a.sh > "\$ALOG"/ {a=NR} /a_opcache_count build\/opcache.zip/ {c=NR} END {print (a && c && c > a && c - a < 6) ? 1 : 0}' "$ROOT/deploy/a-settings.sh")"
+ok "deploy.sh OPCACHE_A=1 runs a_build_primed" "$(grep -qx '  a_build_primed || exit 1' "$ROOT/deploy/deploy.sh" && echo 1 || echo 0)"
 
 echo "3. the rendered config against remote_assets_check.py"
 APP="$T/app"; mkdir -p "$APP/build"

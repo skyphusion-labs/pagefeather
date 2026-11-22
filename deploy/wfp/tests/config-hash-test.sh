@@ -505,7 +505,9 @@ measurement=" APP_PASSWORD_HEADROOM COMMENT_HEADROOM DISPATCH_PERF_LOG EMAIL_FAU
 buildinputs=" WOO_ACTIVE IMPORT_PLUGINS PLUGINS "
 # GONE_LAST, GONE_WAITED (#789): the outputs of the bounded gone check (deploy/lib/gone-wait.sh), set per call, never a setting.
 # HEADROOM_GATES (#1008): lib.sh's constant list of the four gate names headroom_off_vars reads, not a setting.
-notset=" HEADROOM_GATES API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN TMPDIR THROWAWAY GONE_LAST GONE_WAITED$measurement$buildinputs"
+# SITE_KIND (#1319): the site's kind. site add sets it from the run's KIND; every command on an existing site reads it
+# from the workspace state (lib.sh site_vars, REC_KIND: the object cache namespace), so no run's environment sets it.
+notset=" SITE_KIND HEADROOM_GATES API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN TMPDIR THROWAWAY GONE_LAST GONE_WAITED$measurement$buildinputs"
 settings=" $(bash -c '. "'"$LIB"'"; echo $SITE_SETTINGS') "
 miss=""; for n in $derived; do case "$settings$notset" in *" $n "*) ;; *) miss="$miss $n" ;; esac; done
 ok "#558 every env name render_user reads is a recorded setting or named with a reason (missing:${miss:- none})" "$([ -z "$miss" ] && [ -n "$derived" ] && printf '%s\n' $derived | grep -qx HEADROOM_PROBE && echo 1 || echo 0)"

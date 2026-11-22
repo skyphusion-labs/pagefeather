@@ -62,6 +62,31 @@ variable "data_hold" {
 
 variable "kv_namespace_id" { type = string }
 
+# #1319: the site's kind. "b-dosql" (the default, every site before #1319) or "a", approach A: PHP in the
+# user Worker, the owner's MySQL through Hyperdrive. An existing site's kind comes from its state (lib.sh
+# site_vars: the object cache namespace below), never from the run, so an update cannot flip it.
+variable "kind" {
+  type    = string
+  default = "b-dosql"
+  validation {
+    condition     = contains(["b-dosql", "a"], var.kind)
+    error_message = "kind must be b-dosql or a."
+  }
+}
+
+# #1319: kind a only, the id of the site's Hyperdrive config wp-wfp-<name>. deploy/wfp/site makes it through
+# the API before this apply and deletes it after the destroy (lib.sh hd_create, hd_delete), so the database
+# password goes to Hyperdrive only and is never in this state. Recorded here so every later apply and the
+# render read the same id.
+variable "hyperdrive_id" {
+  type    = string
+  default = ""
+  validation {
+    condition     = can(regex("^([0-9a-f]{32})?$", var.hyperdrive_id))
+    error_message = "hyperdrive_id must be empty or a 32-hex Hyperdrive config id."
+  }
+}
+
 # Per-call limits, applied by the dispatcher (docs/wfp.md item 4: cpuMs is
 # not exact below about 2 s). 0 leaves a limit unset.
 variable "cpu_ms" {
@@ -146,6 +171,21 @@ resource "cloudflare_r2_bucket_lifecycle" "media" {
       }
     }
   }]
+}
+
+# #1319: kind a's object cache (the L2 cache, #666), the OC_KV binding. The same name the provisioning core
+# gives it (wp-wfp-<name>-oc), so a footprint reads one name for both.
+resource "cloudflare_workers_kv_namespace" "oc" {
+  count      = var.kind == "a" ? 1 : 0
+  account_id = var.account_id
+  title      = "wp-wfp-${var.name}-oc"
+
+  lifecycle {
+    precondition {
+      condition     = var.hyperdrive_id != ""
+      error_message = "kind a needs hyperdrive_id: deploy/wfp/site makes the Hyperdrive config first."
+    }
+  }
 }
 
 resource "random_password" "wp_salt" {
@@ -240,3 +280,7 @@ output "admin_password" {
   value     = random_password.admin_password.result
   sensitive = true
 }
+# #1319: kind a's two ids for the render (render-conf.sh reads them through out), empty on b-dosql.
+output "kind" { value = var.kind }
+output "hyperdrive_id" { value = var.hyperdrive_id }
+output "oc_kv_id" { value = var.kind == "a" ? cloudflare_workers_kv_namespace.oc[0].id : "" }
