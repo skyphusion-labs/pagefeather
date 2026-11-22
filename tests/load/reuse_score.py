@@ -279,6 +279,8 @@ def main(argv):
         detail += "; exceededMemory on %d, off %d" % (on["exceededMemory"], off["exceededMemory"])
         v = "pass" if (d_on <= d_off and on["exceededMemory"] <= off["exceededMemory"] and not worse_lw) else "FAIL"
     elif dsrc == "platform" and (on.get("ridless") or off.get("ridless")):
+        # The platform death counts are unreadable here, so they decide nothing. d_on and d_off are the CLIENT's
+        # counts (x-isolate-reset answers plus no-answers, from the run file, not the logs), measured separately.
         v = "FAIL" if (d_on > d_off or worse_lw) else "could not measure"
         detail += "; platform deaths: the request id is empty on every line of the %s arm (rid, $workers.requestId, $metadata.requestId), so a death cannot take its own request's isolate (#1022)" % (
             " and ".join(n for n, A in (("on", on), ("off", off)) if A.get("ridless")))

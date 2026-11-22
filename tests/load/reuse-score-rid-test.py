@@ -71,6 +71,20 @@ ok("the detail names the empty request id", "request id" in b and "empty" in b, 
 b = bar2(logs("N2-off", lines(none)), logs("N2-on", lines(meta)))
 ok("the same when the OFF arm is the one with no request id", "| could not measure |" in b, b)
 
+print("3b. ridless: the unreadable platform count decides nothing; only client-measured resets or lost writes FAIL")
+# The on arm's fallback count is HIGHER (3 against 1), but the client saw no more resets and no lost writes.
+many = lines(none) + [{"t": 7, "m": "perf", "iso": "D"}, {"t": 8, "message": DEATH, "level": "error"},
+                      {"t": 9, "m": "perf", "iso": "E"}, {"t": 10, "message": DEATH, "level": "error"}]
+b = bar2(logs("R-off", lines(none)), logs("R-on", many))
+ok("fallback deaths on > off, client and lost writes equal: could not measure, not FAIL", "| could not measure |" in b, b)
+ON_R = os.path.join(tmp, "on-reset.jsonl")
+with open(ON_R, "w") as f:
+    for line in open(ON): f.write(line)
+    f.write(json.dumps({"t": 150.0, "s": 0.5, "kind": "dashboard", "status": 500, "perfId": "on-r", "x-isolate-reset": "memory"}) + "\n")
+r = subprocess.run([sys.executable, "-I", SCORE, OFF, ON_R, "--logs-off", logs("R2-off", lines(none)), "--logs-on", logs("R2-on", lines(none))], capture_output=True, text=True)
+b = next((l for l in r.stdout.splitlines() if l.startswith("| 2 |")), r.stdout[-300:])
+ok("the control: a client-seen reset on the on arm still FAILS a ridless bar 2", "| FAIL |" in b and "client resets+no-answer on 1, off 0" in b, b)
+
 print("4. one line with a request id is enough: the refusal is for an arm where the step can never run")
 part = lines(none); part[1] = {**part[1], "rid": "X"}; part[4] = {**part[4], "rid": "X"}
 b = bar2(logs("P-off", lines(meta)), logs("P-on", part))
