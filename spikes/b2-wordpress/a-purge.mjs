@@ -5,13 +5,14 @@
 // so guest copies could stay old for up to their TTL.
 //
 // Now a refused purge is never lost. Two routes (aPurgeRoute):
-// - 'object': approach A runs a per-site cron object (A_CRON=on, the PHP_RUNTIME binding, a-cron.mjs). The gateway
-//   hands each ask to that object's requestPurge(), the same path a b-dosql site uses (#699): the object coalesces the
-//   whole site's asks into one send per PURGE_GAP_MS, keeps a refused purge pending in its storage, retries it on its
-//   alarm with the back-off (12, 24, 48 s), asks the account purge budget when one is bound (fail-open), and calls
-//   the site's own Pages.purge (a Worker purges only its own cache; the object runs in the site's own script).
-//   A hand-off that fails falls back to the local route, so the purge is still sent.
-// - 'local': no cron object. The isolate keeps the same purge-state.mjs state in memory and retries inside the
+// - 'object': the Worker has the PHP_RUNTIME binding. The gateway hands each ask to the site's PURGE object (the
+//   PhpRuntime named PURGE_OBJECT_NAME) with requestPurge({ purgeOnly: true }). That is the #699 path b-dosql uses: the
+//   object coalesces the whole site's asks into one send per PURGE_GAP_MS, keeps a refused purge pending in its
+//   storage, retries it on its alarm with the back-off (12, 24, 48 s), asks the account purge budget when one is
+//   bound (fail-open), and calls the site's own Pages.purge (a Worker purges only its own cache; the object runs in
+//   the site's own script). It is NOT the cron object: its alarm sends purges and nothing else, so a write never
+//   starts WP-Cron (a-cron-e2e.sh CONTROL). A hand-off that fails falls back to the local route.
+// - 'local': no PHP_RUNTIME binding. The isolate keeps the same purge-state.mjs state in memory and retries inside the
 //   request's waitUntil, for at most WAITUNTIL_BUDGET_MS. A purge still refused then stays pending, logged as
 //   purge-pending, and the isolate's next request sends it (kick). Limit: an isolate evicted while a purge is pending
 //   loses it; the copy then ages out within purgeWindowMs, as before.
@@ -23,14 +24,16 @@
 // longer than purgeWindowMs. With the bucket available, the purge goes out within PURGE_GAP_MS (15 s) of the ask, plus
 // one back-off step per refusal.
 import { PURGE_GAP_MS, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
-import { approachACronEnabled } from './a-cron.mjs';
 import { rendersInWorker } from './pages-render.mjs';
 
 // A Worker's waitUntil may run about 30 s after the response; the local retries stop short of that.
 export const WAITUNTIL_BUDGET_MS = 25000;
 
+// The site's purge object (a PhpRuntime; never the cron object, a-cron.mjs CRON_OBJECT_NAME, nor a pool object).
+export const PURGE_OBJECT_NAME = 'purge';
+
 export function aPurgeRoute(env) {
-	return env && approachACronEnabled(env) && env.PHP_RUNTIME && rendersInWorker(env) ? 'object' : 'local';
+	return env && env.PHP_RUNTIME && rendersInWorker(env) ? 'object' : 'local';
 }
 
 export function createGatewayPurger({ now = () => Date.now(), sleep = (ms) => new Promise((ok) => setTimeout(ok, ms)), log = (o) => console.log(JSON.stringify(o)), dispose = () => {}, env = null } = {}) {

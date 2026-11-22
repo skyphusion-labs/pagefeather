@@ -232,7 +232,7 @@ The 2 MB body cap (8b) blocked a normal phone photo (3 to 14 MB). Now a media up
 
 Purge limits: Workers Cache purges always have the Free-tier limits, 5 a minute with bursts of 25, per account. A busy site runs out. So pages use `max-age=120, stale-while-revalidate=600`, purges are best effort (at most one per 15 s per isolate), and uploads are `private, max-age=86400` (browsers cache them, the edge does not, so a deleted upload is gone at once). `tests/break.py` passed 27 of 27 twice in a row after this change.
 
-**Since #699 (2026-11-16):** a refused purge is no longer dropped. The PHP object keeps it pending and retries it after 12 s, 24 s, then every 48 s. It gives up only when no cached copy can still be served: `max-age` plus `stale-while-revalidate`, so 720 s by default. Until then, a purge still stops a stale copy. The account-wide budget for these purges is #699's part b. Approach A had no such object and dropped a refused purge; since #837 it hands its purges to the site cron object or retries them itself (`docs/approach-a-purge.md`).
+**Since #699 (2026-11-16):** a refused purge is no longer dropped. The PHP object keeps it pending and retries it after 12 s, 24 s, then every 48 s. It gives up only when no cached copy can still be served: `max-age` plus `stale-while-revalidate`, so 720 s by default. Until then, a purge still stops a stale copy. The account-wide budget for these purges is #699's part b. Approach A had no such object and dropped a refused purge; since #837 it hands its purges to a per-site purge object or retries them itself (`docs/approach-a-purge.md`).
 
 ### 8e. CPU: OPcache, and a boot with no copies. Measured 2026-11-04.
 

@@ -72,7 +72,7 @@ import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIs
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
-import { createGatewayPurger, aPurgeRoute } from './a-purge.mjs'; // #837
+import { createGatewayPurger, aPurgeRoute, PURGE_OBJECT_NAME } from './a-purge.mjs'; // #837
 import { budgetAcquire, budgetRefused } from './purge-budget-client.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
@@ -2364,6 +2364,8 @@ let selfTickKicked = false; // #1310: this isolate sent its one self-tick kick (
 // its purges to the site cron object or retries them itself (a-purge.mjs, #837).
 // The object's purge state (issue #78, #699): purge-state.mjs, in its storage.
 const PURGE_STATE_KEY = 'skyphusion-purge';
+// #837: set on approach A's purge object (requestPurge with purgeOnly): its alarm only sends purges.
+const PURGE_ONLY_KEY = 'skyphusion-purge-only';
 const ORIGIN_KEY = 'skyphusion-origin';
 const CRON_SKIP_KEY = 'cron-skip';
 const CRON_CLEAN_KEY = 'cron-cleaned-at';
@@ -2397,7 +2399,7 @@ function purgeCtx(ctx) {
 	return {
 		waitUntil: (p) => ctx.waitUntil(p),
 		purge: () => ctx.exports.Pages.purge(['wp-pages']),
-		handOff: aPurgeRoute(env) === 'object' ? () => env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(CRON_OBJECT_NAME)).requestPurge() : undefined,
+		handOff: aPurgeRoute(env) === 'object' ? () => env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(PURGE_OBJECT_NAME)).requestPurge({ purgeOnly: true }) : undefined,
 	};
 }
 function schedulePurge(ctx) {
@@ -3375,8 +3377,11 @@ export class PhpRuntime extends DurableObject {
 	// refused purge stays pending and is retried with a back-off until no cached
 	// copy can still be served (#699, purge-state.mjs). With a pool of more than
 	// one object, each object coalesces on its own.
-	async requestPurge() {
+	async requestPurge(opts) {
 		const now = Date.now();
+		// #837: approach A's gateway asks with purgeOnly. This object is then the site's purge object: its alarm sends
+		// purges and nothing else (no cron leg, no cron cadence), so a write never starts WP-Cron (a-cron-e2e.sh CONTROL).
+		if (opts && opts.purgeOnly) await this.ctx.storage.put(PURGE_ONLY_KEY, 1);
 		// #699: the rules are purge-state.mjs onAsk. A purge already pending (or waiting out a refusal) covers this change.
 		const a = onAsk(await this.ctx.storage.get(PURGE_STATE_KEY), now);
 		await this.ctx.storage.put(PURGE_STATE_KEY, a.st);
@@ -3385,7 +3390,61 @@ export class PhpRuntime extends DurableObject {
 		return a.coalesced ? 'coalesced' : 'scheduled';
 	}
 
+	// #699 (moved here by #837, unchanged): send a due purge, with the budget, the back-off and the expiry.
+	async sendDuePurge() {
+		// #699: purge-state.mjs. A refused purge stays pending and is retried with a back-off (12, 24, 48 s) until no
+		// cached copy can still be served (PAGE_CACHE_TTL + stale-while-revalidate, purgeWindowMs); then it expires.
+		const due = onDue(await this.ctx.storage.get(PURGE_STATE_KEY), Date.now(), purgeWindowMs(this.env));
+		// #699 part B: before a send, ask the account's purge budget (pf-purge-budget) for a token. Fail-open: with no
+		// binding, or a budget that cannot answer, the send goes ahead as part A (purge-budget-client.mjs).
+		const budgetSite = due.action === 'send' ? siteHost(this.env.SITE_ORIGIN) : '';
+		const gate = due.action === 'send' ? await budgetAcquire(this.env, budgetSite) : null;
+		if (gate && gate.via === 'budget' && !gate.grant) {
+			// Not now: the stored state is untouched (still pending, no attempt counted); come back when the budget says.
+			const now = Date.now();
+			await setAlarmRecorded(this.ctx.storage, gate.retryAt, now, 'purge-budget');
+			console.log(JSON.stringify({ m: 'purge-budget', grant: false, waitMs: gate.retryAt - now, where: 'object' }));
+		} else if (due.action === 'expire') {
+			await this.ctx.storage.put(PURGE_STATE_KEY, due.st);
+			// Not an m: purge line: doctor's guard counts every m: purge line as asked or sent (#688).
+			console.log(JSON.stringify({ m: 'purge-expired', expired: due.st.expired, where: 'object' }));
+		} else if (due.action === 'send') {
+			// Cleared before the purge: a change during the purge asks for the next one.
+			await this.ctx.storage.put(PURGE_STATE_KEY, due.st);
+			let r;
+			try {
+				r = await this.ctx.exports.Pages.purge(['wp-pages']);
+			} catch (e) {
+				r = { ok: false, errors: [String((e && e.message) || e).slice(0, 200)] };
+			}
+			const ok = !!(r && r.ok);
+			const errors = (r && r.errors) || [];
+			const error = (r && r.error) || null;
+			disposeRpc(r); // #510: its fields are copied above
+			const now = Date.now();
+			// A change during the purge may have asked again: onResult reads the current state.
+			const res = onResult(await this.ctx.storage.get(PURGE_STATE_KEY), now, { ok, errors, error }, due.covered);
+			const sent = { t: due.st.lastSent, ok, errors, error, attempt: due.covered.attempts + 1, ageMs: due.st.lastSent - due.covered.firstAsked, outcome: res.outcome, retryMs: res.alarmAt != null ? res.alarmAt - now : 0, budget: gate ? gate.via : null };
+			console.log(JSON.stringify({ m: 'purge', sent: 1, ...sent, where: 'object' }));
+			// The last 20 sends, for /_purgestate: wrangler tail does not show alarm runs.
+			res.st.sends = [...(res.st.sends || []), sent].slice(-20);
+			await this.ctx.storage.put(PURGE_STATE_KEY, res.st);
+			if (res.alarmAt != null) await setAlarmRecorded(this.ctx.storage, res.alarmAt, now, 'purge-retry');
+			// Refused although the budget granted it: another user spent the account bucket. The budget empties itself.
+			if (res.outcome === 'refused' && gate && gate.via === 'budget') await budgetRefused(this.env, budgetSite);
+		}
+	}
+
 	async alarm() {
+		// #837: the purge object runs only the purge block. No cron leg, no re-arm of the cron cadence.
+		if (await this.ctx.storage.get(PURGE_ONLY_KEY)) {
+			try {
+				await this.sendDuePurge();
+			} catch (e) {
+				console.log(JSON.stringify({ m: 'alarm', purgeOnlyError: String((e && e.message) || e).slice(0, 200) }));
+			}
+			return;
+		}
 		// #1186: on a cron-off approach A build this object has no alarm work (the Cron Trigger is cleared too, #1192):
 		// the alarm deletes itself and does not re-arm, so due work never runs a leg here. Logged, so the opt-out shows.
 		if (aCronObjectOff(this.env)) {
@@ -3620,47 +3679,8 @@ export class PhpRuntime extends DurableObject {
 			cst.cron = { t: Date.now(), error: detail.error, errMsg: detail.errMsg, errFile: detail.errFile, errLine: detail.errLine, stderrHead: detail.stderrHead, stack: detail.stack };
 			await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 		}
-		// #699: purge-state.mjs. A refused purge stays pending and is retried with a back-off (12, 24, 48 s) until no
-		// cached copy can still be served (PAGE_CACHE_TTL + stale-while-revalidate, purgeWindowMs); then it expires.
-		const due = onDue(await this.ctx.storage.get(PURGE_STATE_KEY), Date.now(), purgeWindowMs(this.env));
-		// #699 part B: before a send, ask the account's purge budget (pf-purge-budget) for a token. Fail-open: with no
-		// binding, or a budget that cannot answer, the send goes ahead as part A (purge-budget-client.mjs).
-		const budgetSite = due.action === 'send' ? siteHost(this.env.SITE_ORIGIN) : '';
-		const gate = due.action === 'send' ? await budgetAcquire(this.env, budgetSite) : null;
-		if (gate && gate.via === 'budget' && !gate.grant) {
-			// Not now: the stored state is untouched (still pending, no attempt counted); come back when the budget says.
-			const now = Date.now();
-			await setAlarmRecorded(this.ctx.storage, gate.retryAt, now, 'purge-budget');
-			console.log(JSON.stringify({ m: 'purge-budget', grant: false, waitMs: gate.retryAt - now, where: 'object' }));
-		} else if (due.action === 'expire') {
-			await this.ctx.storage.put(PURGE_STATE_KEY, due.st);
-			// Not an m: purge line: doctor's guard counts every m: purge line as asked or sent (#688).
-			console.log(JSON.stringify({ m: 'purge-expired', expired: due.st.expired, where: 'object' }));
-		} else if (due.action === 'send') {
-			// Cleared before the purge: a change during the purge asks for the next one.
-			await this.ctx.storage.put(PURGE_STATE_KEY, due.st);
-			let r;
-			try {
-				r = await this.ctx.exports.Pages.purge(['wp-pages']);
-			} catch (e) {
-				r = { ok: false, errors: [String((e && e.message) || e).slice(0, 200)] };
-			}
-			const ok = !!(r && r.ok);
-			const errors = (r && r.errors) || [];
-			const error = (r && r.error) || null;
-			disposeRpc(r); // #510: its fields are copied above
-			const now = Date.now();
-			// A change during the purge may have asked again: onResult reads the current state.
-			const res = onResult(await this.ctx.storage.get(PURGE_STATE_KEY), now, { ok, errors, error }, due.covered);
-			const sent = { t: due.st.lastSent, ok, errors, error, attempt: due.covered.attempts + 1, ageMs: due.st.lastSent - due.covered.firstAsked, outcome: res.outcome, retryMs: res.alarmAt != null ? res.alarmAt - now : 0, budget: gate ? gate.via : null };
-			console.log(JSON.stringify({ m: 'purge', sent: 1, ...sent, where: 'object' }));
-			// The last 20 sends, for /_purgestate: wrangler tail does not show alarm runs.
-			res.st.sends = [...(res.st.sends || []), sent].slice(-20);
-			await this.ctx.storage.put(PURGE_STATE_KEY, res.st);
-			if (res.alarmAt != null) await setAlarmRecorded(this.ctx.storage, res.alarmAt, now, 'purge-retry');
-			// Refused although the budget granted it: another user spent the account bucket. The budget empties itself.
-			if (res.outcome === 'refused' && gate && gate.via === 'budget') await budgetRefused(this.env, budgetSite);
-		}
+		// #699: the purge block, shared with the #837 purge-only object (sendDuePurge).
+		await this.sendDuePurge();
 		// Keep the cron cadence unless the purge logic set a sooner retry alarm.
 		await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
 	}

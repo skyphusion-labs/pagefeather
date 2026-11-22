@@ -8,7 +8,9 @@
 // alarm, built on the same purge-state.mjs functions: it proves the decision path, not the deployed object.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createGatewayPurger, aPurgeRoute, WAITUNTIL_BUDGET_MS } from '../a-purge.mjs';
+import { readFileSync } from 'node:fs';
+import { createGatewayPurger, aPurgeRoute, WAITUNTIL_BUDGET_MS, PURGE_OBJECT_NAME } from '../a-purge.mjs';
+import { CRON_OBJECT_NAME } from '../a-cron.mjs';
 import { PURGE_GAP_MS, RETRY_MS, purgeWindowMs, onAsk, onDue, onResult } from '../purge-state.mjs';
 
 const REFUSED = { ok: false, errors: [{ code: 1134, message: 'Unable to purge, rate limit reached.' }] };
@@ -81,11 +83,32 @@ function ctxFor(w, b, extra = {}) {
 	return { pend, waitUntil: (p) => pend.push(p), purge: async () => b.take(), ...extra };
 }
 
-test('the route: the site cron object when approach A runs one, else this isolate', () => {
+test('the route: the site purge object when the Worker has PHP_RUNTIME, else this isolate', () => {
+	assert.equal(aPurgeRoute({ PHP_RUNTIME: {} }), 'object');
 	assert.equal(aPurgeRoute({ A_CRON: 'on', PHP_RUNTIME: {} }), 'object');
 	assert.equal(aPurgeRoute({ A_CRON: 'on' }), 'local', 'no PHP_RUNTIME binding: no object');
-	assert.equal(aPurgeRoute({ PHP_RUNTIME: {} }), 'local', 'A_CRON off: the pool objects do not own the cache');
-	assert.equal(aPurgeRoute({ A_CRON: 'on', PHP_RUNTIME: {}, PHP_IN_DO: 'on' }), 'local', 'b-dosql never routes here');
+	assert.equal(aPurgeRoute({}), 'local');
+	assert.equal(aPurgeRoute({ PHP_RUNTIME: {}, PHP_IN_DO: 'on' }), 'local', 'b-dosql never routes here');
+	assert.notEqual(PURGE_OBJECT_NAME, CRON_OBJECT_NAME, 'never the cron object: a write must not start WP-Cron');
+});
+
+// index.js cannot be imported under node (it loads php-wasm), so its wiring is read as text, as rpc-dispose does.
+test('index.js wiring: the hand-off asks the purge object purge-only, and its alarm sends purges and nothing else', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /idFromName\(PURGE_OBJECT_NAME\)\)\.requestPurge\(\{ purgeOnly: true \}\)/, 'the gateway hands off to the purge object');
+	assert.doesNotMatch(src, /idFromName\(CRON_OBJECT_NAME\)\)\.requestPurge/, 'never to the cron object');
+	const alarm = src.indexOf('\tasync alarm() {');
+	const only = src.indexOf('if (await this.ctx.storage.get(PURGE_ONLY_KEY)) {', alarm);
+	const off = src.indexOf('if (aCronObjectOff(this.env)) {', alarm);
+	const arm = src.indexOf('armBeforeRun(this.ctx.storage', alarm);
+	assert.ok(alarm > 0 && only > alarm, 'the purge-only branch is in alarm()');
+	assert.ok(only < off && only < arm, 'and comes before the cron-off delete and the cron re-arm');
+	const branch = src.slice(only, src.indexOf('\n\t\t}\n', only));
+	assert.match(branch, /await this\.sendDuePurge\(\);/);
+	assert.match(branch, /return;/);
+	assert.doesNotMatch(branch, /alarmRun|armBeforeRun|rearm\(/, 'no cron leg and no cron cadence in the purge-only alarm');
+	assert.match(src, /async requestPurge\(opts\) \{[\s\S]{0,400}opts\.purgeOnly\) await this\.ctx\.storage\.put\(PURGE_ONLY_KEY, 1\)/, 'requestPurge marks the purge object');
+	assert.equal((src.match(/await this\.sendDuePurge\(\);/g) || []).length, 2, 'one purge block, called by the cron alarm and the purge-only alarm');
 });
 
 test('local: a 1134 refusal is retried after one bucket refill, inside the same waitUntil, never dropped', async () => {
@@ -157,11 +180,11 @@ test('local: a purge refused for longer than the purge window expires, counted, 
 	assert.equal(p.state().expired, 1);
 });
 
-test('object route: each ask is handed to the site cron object, never purged here', async () => {
+test('object route: each ask is handed to the site purge object, never purged here', async () => {
 	const w = world();
 	const b = bucket(w);
 	let handed = 0;
-	const p = createGatewayPurger({ now: w.now, sleep: w.sleep, log: w.log, env: { A_CRON: 'on', PHP_RUNTIME: {} } });
+	const p = createGatewayPurger({ now: w.now, sleep: w.sleep, log: w.log, env: { PHP_RUNTIME: {} } });
 	for (let i = 0; i < 3; i++) p.ask(ctxFor(w, b, { handOff: async () => (handed++, 'scheduled') }));
 	await w.run(w.now() + 60000);
 	assert.equal(handed, 3);
@@ -172,7 +195,7 @@ test('object route: each ask is handed to the site cron object, never purged her
 test('object route: a hand-off that fails falls back to this isolate, so the purge is still sent', async () => {
 	const w = world();
 	const b = bucket(w);
-	const p = createGatewayPurger({ now: w.now, sleep: w.sleep, log: w.log, env: { A_CRON: 'on', PHP_RUNTIME: {} } });
+	const p = createGatewayPurger({ now: w.now, sleep: w.sleep, log: w.log, env: { PHP_RUNTIME: {} } });
 	p.ask(ctxFor(w, b, { handOff: async () => { throw new Error('object unreachable'); } }));
 	await w.run(w.now() + 60000);
 	assert.equal(b.sends.length, 1);
@@ -184,7 +207,7 @@ test('object route: a hand-off that fails falls back to this isolate, so the pur
 // The stated limit, end to end on the object route: writes for 30 min on a site whose neighbour keeps spending the
 // account bucket. For every write, the first successful purge after it comes before the write's age reaches
 // purgeWindowMs (or the purge expired exactly because every copy it targets has aged out). The cron object is the
-// MODEL of index.js requestPurge + alarm (purge-state.mjs, fail-open: no budget binding).
+// MODEL of index.js requestPurge + the purge object's alarm (sendDuePurge) (purge-state.mjs, fail-open: no budget binding).
 function modelCronObject(w, b) {
 	let st = {};
 	let alarm = null;
@@ -226,7 +249,7 @@ test('the stated limit: under a neighbour draining the bucket, no write waits lo
 	const w = world();
 	const b = bucket(w);
 	const obj = modelCronObject(w, b);
-	const p = createGatewayPurger({ now: w.now, sleep: w.sleep, log: w.log, env: { A_CRON: 'on', PHP_RUNTIME: {} } });
+	const p = createGatewayPurger({ now: w.now, sleep: w.sleep, log: w.log, env: { PHP_RUNTIME: {} } });
 	const writes = [];
 	const t0 = w.now();
 	let rnd = 7;
