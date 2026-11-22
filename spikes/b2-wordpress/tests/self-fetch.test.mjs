@@ -32,8 +32,8 @@ test('#1157 the pool is available on the same condition as the overflow dispatch
 });
 test('#1157 index.js: every bridge hop asks selfFetchRoute, sends pool hops through toPhpObject, and logs self-fetch', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /const self = selfFetchRoute\(\{ sameHost: isSelfHost\(url\), inObject: Boolean\(ocCtx && ocCtx\.inObject\), overflowed: Boolean\(ocCtx && ocCtx\.overflowed\), poolAvailable: selfFetchPoolAvailable\(ENV, ovs\), capped: overHeld\(ovs, ovHeld\) \}\);/);
-	assert.match(src, /res = self\.route === 'pool' \? \(await selfFetchFromCache\(url, method, headers, signal\)\) \|\| \(await selfFetchOnPool\(url, method, headers, body, signal\)\) : await fetch\(url, \{ method, headers, body, redirect: 'manual', signal \}\);/); // #1170 lever: the cache first
+	assert.match(src, /const self = selfFetchRoute\(\{ sameHost: isSelfHost\(url\), inObject: Boolean\(ocCtx && ocCtx\.inObject\), overflowed: Boolean\(ocCtx && ocCtx\.overflowed\), poolAvailable: selfFetchPoolAvailable\(ENV, ovs\), capped: overHeld\(ovs, ovHeld\)(, cacheAvailable: Boolean\(ocCtx && !ocCtx\.inObject && ocCtx\.exports && ocCtx\.exports\.Pages\))? \}\);/); // #1157 after #1298: cacheAvailable is the one input added, last
+	assert.match(src, /res = self\.route === 'pool' \? \(await selfFetchFromCache\(url, method, headers, signal\)\) \|\| \(await selfFetchOnPool\(url, method, headers, body, signal\)\) : (self\.route === 'cache' \? await selfFetchCacheOrRefuse\(url, method, headers, signal, self\.missWhy\) : )?await fetch\(url, \{ method, headers, body, redirect: 'manual', signal \}\);/); // #1170 lever: the cache first; #1157 after #1298: the cache route between
 	assert.match(src, /toPhpObject\(new Request\(url, \{ method, headers, body, signal, redirect: 'manual' \}\), ENV, url, null, \{ name: SELF_FETCH_OBJECT, hint: ovs\.hint, overflow: true, callId \}\)/);
 	assert.match(src, /m: 'self-fetch'/);
 	assert.doesNotMatch(src, /function httpRefusal\(url\) \{\n[^\n]*\n\tif \(bootOrigin && url\.hostname === new URL\(bootOrigin\)\.hostname\)/, 'the old blanket refusal is gone');
@@ -139,4 +139,31 @@ test('#1226 index.js: every hop-check refusal for the site own host logs one sel
 	}
 	assert.match(hop, /self\.route === 'refuse' \? self\.why/, 'the exit logs that why');
 	assert.match(hop, /self\.route === 'out' \? httpRefusal\(url\)/, 'an outbound refusal stays on the http line only');
+});
+
+// #1157 after #1298 (the pool off by default): httpHop decided "refuse" before the cache was tried, so EVERY self-fetch
+// was refused, a page already in the front page cache included. The cache path needs no pool (#1170: url-details 200
+// in 1.3 to 1.6 s on cf759hx, every hop a cache hit, ovf-self never booted). With no pool but the Pages export, the hop
+// tries the cache; only a miss is refused, with the same reason.
+test('#1157 no pool but the Pages export: the cache route, and a miss keeps the no-pool reason', () => {
+	assert.deepEqual(selfFetchRoute({ ...base, poolAvailable: false, cacheAvailable: true }), { route: 'cache', missWhy: SELF_REFUSAL_NO_POOL });
+	assert.deepEqual(selfFetchRoute({ ...base, poolAvailable: false }), { route: 'refuse', why: SELF_REFUSAL_NO_POOL }, 'no Pages export: refused, as before');
+	assert.deepEqual(selfFetchRoute({ ...base, cacheAvailable: true }), { route: 'pool' }, 'with the pool: the pool route, which tries the cache first');
+});
+test('#1157 the guards come first: in an object, or on a pool request, the cache route is never taken', () => {
+	assert.deepEqual(selfFetchRoute({ ...base, poolAvailable: false, cacheAvailable: true, inObject: true }), { route: 'refuse', why: SELF_REFUSAL_OBJECT });
+	assert.deepEqual(selfFetchRoute({ ...base, poolAvailable: false, cacheAvailable: true, inObject: true, overflowed: true }), { route: 'refuse', why: SELF_REFUSAL_GUARD });
+	assert.equal(selfFetchRoute({ ...base, sameHost: false, cacheAvailable: true }).route, 'out');
+});
+test('#1157 index.js: the hop passes cacheAvailable from the Pages export, and a cache-route miss logs the refusal and throws it', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /selfFetchRoute\(\{ sameHost: isSelfHost\(url\),[^}]*cacheAvailable: Boolean\(ocCtx && !ocCtx\.inObject && ocCtx\.exports && ocCtx\.exports\.Pages\)/);
+	assert.match(src, /: self\.route === 'cache' \? await selfFetchCacheOrRefuse\(url, method, headers, signal, self\.missWhy\) :/);
+	const f = src.slice(src.indexOf('async function selfFetchCacheOrRefuse('), src.indexOf('async function selfFetchOnPool('));
+	assert.ok(f.length > 0, 'the helper exists, beside selfFetchFromCache');
+	assert.match(f, /const r = await selfFetchFromCache\(url, method, headers, signal\);/);
+	assert.match(f, /if \(r\) return r;/);
+	assert.match(f, /m: 'self-fetch', outcome: 'refused', why: missWhy, method, path: url\.pathname, iso: ISOLATE_ID, parent: runCallId/);
+	assert.match(f, /throw new Error\(missWhy\);/);
+	assert.ok(f.indexOf("outcome: 'refused'") < f.indexOf('throw new Error(missWhy);'), 'logged before the throw');
 });

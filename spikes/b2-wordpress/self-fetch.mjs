@@ -30,11 +30,14 @@ export function selfFetchSameIsolate(overflowed, callId) {
 }
 export const SELF_REFUSAL_CAPPED = 'a request to this site itself is refused: this isolate holds its most overflowed requests (PHP_OVERFLOW_MAX_HELD)';
 
-export function selfFetchRoute({ sameHost, inObject, overflowed, poolAvailable, capped }) {
+// - 'cache' (#1157 after #1298): the site's own host on the approach A Worker with NO pool but the Pages export: a
+//   guest GET can still be answered from the front page cache, which needs no other runtime (#1170 measured it); only
+//   a miss is refused, with missWhy.
+export function selfFetchRoute({ sameHost, inObject, overflowed, poolAvailable, capped, cacheAvailable = false }) {
 	if (!sameHost) return { route: 'out' };
 	if (overflowed) return { route: 'refuse', why: SELF_REFUSAL_GUARD };
 	if (inObject) return { route: 'refuse', why: SELF_REFUSAL_OBJECT };
-	if (!poolAvailable) return { route: 'refuse', why: SELF_REFUSAL_NO_POOL };
+	if (!poolAvailable) return cacheAvailable ? { route: 'cache', missWhy: SELF_REFUSAL_NO_POOL } : { route: 'refuse', why: SELF_REFUSAL_NO_POOL };
 	if (capped) return { route: 'refuse', why: SELF_REFUSAL_CAPPED };
 	return { route: 'pool' };
 }
