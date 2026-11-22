@@ -43,6 +43,10 @@ On a Hyperdrive store (approach A), WooCommerce admin screens and bulk product e
   - WooCommerce's write loop and the scoring against the bar: [#1078, the levers](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083327101);
   - the templates-list fix, stopped at its pre-check: [#1078, the templates check](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083356454).
 
+### A database query is cut off after 30 s on Hyperdrive (#1359)
+
+On approach A, one MySQL query may take at most 30 s (`DB_QUERY_TIMEOUT_MS`, default 30,000). Past that, the query fails as a lost connection, and WordPress shows a database error for that request. In three full WooCommerce suite runs, no query came near it: the longest requests are thousands of short queries. The bound exists because a query that never answers holds the isolate's PHP lock, and every later request on that isolate is refused with a 503. **What it covers:** a query that never answers in a request that is still running (for example a Hyperdrive hang). **Not yet:** the case #1277 measured, where a client hangs up mid-request. If the platform stops that request's work, the bound cannot fire there either. That is being measured, and a second fix is planned (#1359). The bound and its reasons are in [the deploy README](../../deploy/README.md#when-a-database-query-does-not-answer-1359).
+
 ### Order emails on Hyperdrive were late (#1215, fixed)
 
 WooCommerce queues each order email. The approach A cron alarm ran those actions 12 to 122 s later, on `cf759hl` at main `822ab24` (row "wc email wait"). The suite polls for 30 s, so a send could miss that poll. A second miss on that run was the harness (#1216; PR #1217 fixed it, merged 2026-11-21).
