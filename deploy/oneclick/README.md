@@ -77,6 +77,8 @@ This directory is self-contained, because the button builds only this directory.
 
 Configuration: `PAGEFEATHER_KEY` and `ADMIN_EMAIL` are secrets. `CF_ACCOUNT_ID` and `ACCESS_AUD` are optional vars. `BUNDLE_VERSION` and `BUNDLE_MANIFEST_SHA256` name the WordPress release and the SHA-256 of its `manifest.json`. The key's permissions and what the code does with them are in `deploy/provision/HARDENING.md`, "The one-click site manager key".
 
+`RELEASE_BASE` (optional) replaces the release host, `https://github.com/skyphusion-labs/pagefeather/releases/download` by default (`bundle.mjs`). It must NOT be a `workers.dev` address on the same Cloudflare account as the site manager: Cloudflare refuses a Worker's `fetch()` to another Worker on the same account's `workers.dev` with HTTP 404 `error code: 1042` (measured 2026-11-22, #1049). Use a host outside that zone, for example the release bucket's public `r2.dev` URL.
+
 Tests (from the repository root):
 
 ```sh
