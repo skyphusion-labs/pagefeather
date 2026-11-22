@@ -10,9 +10,9 @@ analytics rows. This prints those four for one site, plus the site map's limits 
 
 The invocation rows are summarized by type and status; --rows prints every alarm and non-success row too.
 
-Reads only: GET <base>/_purgestate (the site's object: getAlarm(), alarmSet, alarmFatal, cronRun), GraphQL
-durableObjectsInvocationsAdaptiveGroups and durableObjectsPeriodicGroups for script site-<name>, and GET of the
-site map entry. Writes nothing anywhere. Each section prints one `@event <name> {json}` line; a section that could
+Reads only: GET <base>/_purgestate (the site's object: getAlarm(), alarmSet, alarmFatal, cronRun), GET of the account's Durable Object
+namespaces (to find site-<name>'s), GraphQL durableObjectsInvocationsAdaptiveGroups (by that namespace id) and
+durableObjectsPeriodicGroups, and GET of the site map entry. Writes nothing anywhere. Each section prints one `@event <name> {json}` line; a section that could
 not be read prints `@event <name> {"could_not_measure": ...}`, never a guess. Test: deploy/wfp/tests/alarm-record-test.py.
 """
 import datetime as D
@@ -22,8 +22,10 @@ import sys
 import urllib.error
 import urllib.request
 
+# The invocations are filtered by the object's NAMESPACE id, not scriptName: a kind a site's rows carry scriptName
+# "__unknown__" (alarm and http alike; live, 2026-11-22, pfcw1), so a scriptName filter found none of them.
 GQL_INV = """query($a: String!, $s: Time!, $e: Time!, $n: String!) { viewer { accounts(filter: {accountTag: $a}) {
-  inv: durableObjectsInvocationsAdaptiveGroups(limit: 10000, filter: {datetime_geq: $s, datetime_lt: $e, scriptName: $n}, orderBy: [datetimeMinute_ASC]) {
+  inv: durableObjectsInvocationsAdaptiveGroups(limit: 10000, filter: {datetime_geq: $s, datetime_lt: $e, namespaceId: $n}, orderBy: [datetimeMinute_ASC]) {
     sum { requests errors wallTime } dimensions { datetimeMinute type status objectId } } } } }"""
 # durableObjectsPeriodicGroups has no scriptName filter (live, 2026-11-16: "unknown arg scriptName"); it is filtered by
 # the object ids the invocation query found.
@@ -37,6 +39,15 @@ def utc(ms):
     if ms is None:
         return None
     return D.datetime.fromtimestamp(int(ms) / 1000, D.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def do_namespace_id(namespaces, script):
+    """The id of script's PhpRuntime Durable Object namespace, from GET /workers/durable_objects/namespaces; None when
+    the account lists none for it (could not measure, never another site's)."""
+    for n in namespaces or []:
+        if n.get("script") == script and n.get("class") == "PhpRuntime":
+            return n.get("id")
+    return None
 
 
 def alarm_only_minutes(inv_rows, cpu_rows):
@@ -143,11 +154,16 @@ def main(argv):
         event("alarm", {"could_not_measure": str(e)[:300]})
     # 1 and 4: the object id and the analytics rows.
     tok, acct = os.environ.get("CLOUDFLARE_API_TOKEN", ""), os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
-    v = {"a": acct, "s": start.isoformat().replace("+00:00", "Z"), "e": now.isoformat().replace("+00:00", "Z"), "n": script}
+    v = {"a": acct, "s": start.isoformat().replace("+00:00", "Z"), "e": now.isoformat().replace("+00:00", "Z")}
     inv = cpu = None
     try:
+        nsl = http_json("https://api.cloudflare.com/client/v4/accounts/%s/workers/durable_objects/namespaces?per_page=1000" % acct,
+                        {"Authorization": "Bearer " + tok}).get("result")
+        v["n"] = do_namespace_id(nsl, script)
+        if not v["n"]:
+            raise RuntimeError("no PhpRuntime Durable Object namespace for %s among %d listed" % (script, len(nsl or [])))
         inv = gql(GQL_INV, v, tok)
-        event("objects", {"objectIds": sorted({r["dimensions"]["objectId"] for r in inv if r["dimensions"]["objectId"]})})
+        event("objects", {"namespaceId": v["n"], "objectIds": sorted({r["dimensions"]["objectId"] for r in inv if r["dimensions"]["objectId"]})})
         event("invocations", summarize(inv))
         for r in (inv if rows_flag else []):
             d = r["dimensions"]

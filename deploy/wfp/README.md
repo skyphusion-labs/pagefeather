@@ -424,6 +424,7 @@ Cloudflare support (case 02430361, 2026-11-16) said: after its retry budget (exp
 - **The limits:** the script also prints the CPU of minutes whose only invocations were alarms, and whether the map's `cpuMs` is below the worst of them.
 - **No guesses:** a section it cannot read prints `could_not_measure`. A 403 from `/_purgestate` says which layer refused: the site (the token) or the edge (error code 1010, the client signature; the script sends its own User-Agent).
 - **Output:** the invocations are summarized by type and status; `--rows` also prints every alarm and non-success row.
+- **Durable Object analytics are read by namespace id, not script name.** A kind a site's object rows carry `scriptName` `__unknown__` (alarm and http alike; measured 2026-11-22 on pfcw1: 0 rows by `scriptName`, 37 by `namespaceId`). So any GraphQL `durableObjects*` query for a site filters by the id that `GET /workers/durable_objects/namespaces` lists for `site-<name>` (class `PhpRuntime`). `durableObjectsPeriodicGroups` has no `scriptName` filter at all.
 ## Tests (offline)
 
 ```sh
