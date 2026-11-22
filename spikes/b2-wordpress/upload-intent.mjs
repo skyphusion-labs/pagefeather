@@ -1,16 +1,24 @@
-// #1039, approach A (Hyperdrive): a media upload whose request dies must not leave its R2 files without an attachment.
-// Approach A has no request frame (MySQL autocommits, and a 1102 kill runs no Worker code after it), so nothing can be
-// undone at the failure. Instead (the lead's ruling, 2026-11-20):
-//   - on a MEDIA UPLOAD request only (isMediaUploadRequest: the paths that create an attachment), every R2 key the
-//     request CREATES gets a marker object first (MARKER_PREFIX + key, customMetadata kind=upload);
-//   - when PHP answers 2xx, the request drops its own markers (dropMarkersOn); any other answer leaves them for the sweep;
-//   - the sweep (the throttled start of a media upload) looks only at UPLOAD markers older than STALE_MS: a file whose
-//     attachment exists (_wp_attached_file, every metadata size, original_image) keeps its file and loses the marker;
-//     one that no attachment names is deleted with its marker and its name reservation (an upload-orphan-swept event).
-// A file with no marker is never touched: fonts, invoices, exports, logs and form uploads are never candidates.
+// #1039, approach A (Hyperdrive). PHP autocommits each statement, and a 1102 kill runs no Worker code
+// after it, so nothing can delete on rollback (that path is b-dosql, #1047). Instead, the lead's ruling
+// (2026-11-22):
+//   - before each put or copy that CREATES a key, write `_pf-intent/<key>` whose body is the request id
+//     and the time. An overwrite gets no marker. A marker write that fails is a could-not-mark line and
+//     does not fail the upload (that file then cannot be swept);
+//   - when PHP answers, any status, the request deletes the markers of its own keys in waitUntil;
+//   - the sweep judges markers older than 15 minutes, at most SWEEP_MAX per run. One indexed SELECT
+//     (meta_key equality, the postmeta index) asks whether an attachment names a dated
+//     uploads/YYYY/MM/<file> key. Attached: drop the marker. Not attached: delete the file, its name
+//     reservation and the marker. Any SELECT error keeps both.
+// A key is deleted only when its path is core's dated attachment shape, uploads/YYYY/MM/<file>
+// (a four-digit year, a month 01-12, then a file name with no further folder). Anything else keeps
+// the file and drops the stale marker so it does not fill the cap. A key outside uploads/ (an invoice,
+// an export) counts as kept-other. Any other key under uploads/ (fonts/, woocommerce_uploads/,
+// wc-logs/, a plugin folder) counts as kept-shape. The attachment SELECT runs only for the dated
+// shape. A SELECT error keeps both the file and the marker.
 export const MARKER_PREFIX = '_pf-intent/';
 export const STALE_MS = 15 * 60 * 1000;
-export const SWEEP_MAX = 25; // markers per sweep (the next sweep takes the rest)
+export const SWEEP_MAX = 200; // markers per run (the next run takes the rest)
+const META_CAP = 40; // metadata rows read for one basename; a full cap that does not match is "could not tell"
 
 /** The REST route a request names, or null (pretty /wp-json/... or ?rest_route=). */
 function restRoute(pathname, search) {
@@ -29,21 +37,12 @@ function restRoute(pathname, search) {
 	return p.slice(at + '/wp-json'.length) || '/';
 }
 
-/** A request on a path that creates an attachment: async-upload.php, media-new.php, media-upload.php, REST POST /wp/v2/media. */
+/** A request that starts a media upload: async-upload.php, media-new.php, media-upload.php, REST POST /wp/v2/media. The sweep trigger, not the set of keys that get a marker. */
 export function isMediaUploadRequest(method, pathname, search) {
 	if (String(method || '').toUpperCase() !== 'POST') return false;
 	if (/\/wp-admin\/(?:async-upload|media-new|media-upload)\.php$/.test(String(pathname || ''))) return true;
 	const r = restRoute(pathname, search);
 	return r !== null && /^\/wp\/v2\/media\/?$/.test(r);
-}
-
-/**
- * Whether a request's markers drop when PHP answers: only a 2xx (the lead's review on #1051). A 500 after the files
- * were stored is the same orphan as a kill, so its markers stay and the sweep decides by the attachment rows. A 3xx
- * (media-new.php redirects after a save) keeps them too; the sweep then finds the attachment and drops only the marker.
- */
-export function dropMarkersOn(status) {
-	return Number.isInteger(status) && status >= 200 && status <= 299;
 }
 
 export function markerKey(key) {
@@ -64,56 +63,132 @@ export function metadataNames(serialized) {
 	return [...out];
 }
 
+/** Directory of the metadata's own file path, or null when the blob has no file field. */
+function metadataDir(serialized) {
+	const m = /s:\d+:"file";s:\d+:"([^"]*)";/.exec(String(serialized || ''));
+	if (!m) return null;
+	const v = m[1];
+	return v.includes('/') ? v.slice(0, v.lastIndexOf('/')) : '';
+}
+
 const hex = (s) => "CONVERT(X'" + [...new TextEncoder().encode(String(s))].map((b) => b.toString(16).padStart(2, '0')).join('') + "' USING utf8mb4)";
 
+/** Core's dated attachment path: uploads/YYYY/MM/<file>. Year is four digits, month is 01-12, and the file name has no further folder. */
+function isDatedAttachmentKey(key) {
+	return /^uploads\/[0-9]{4}\/(?:0[1-9]|1[0-2])\/[^/]+$/.test(String(key));
+}
+
 /**
- * The two reads that say whether an attachment names an R2 key under uploads/, or null for any other key. Only hex
- * literals carry the name, so no file name is ever SQL text. attached: a row whose _wp_attached_file is the file.
- * meta: the metadata of the attachments in the same directory whose metadata mentions the name (checked exactly by
- * metadataNames after the read; a LIKE wildcard in the name only widens the read, never the decision).
+ * One indexed SELECT that says whether an attachment names a dated uploads/YYYY/MM/<file> key,
+ * or null for any other key. Both branches lead with meta_key equality (KEY meta_key on postmeta).
+ * Only hex literals carry the name, so a file name is never SQL text. The metadata branch is widened
+ * by LIKE and then checked exactly (metadataNames plus the same directory).
  */
-export function referenceQueries(prefix, key) {
+export function referenceQuery(prefix, key) {
 	const k = String(key);
-	if (!k.startsWith('uploads/')) return null;
+	if (!isDatedAttachmentKey(k)) return null;
 	const rel = k.slice('uploads/'.length);
 	const slash = rel.lastIndexOf('/');
 	const dir = slash < 0 ? '' : rel.slice(0, slash);
 	const base = slash < 0 ? rel : rel.slice(slash + 1);
 	const p = String(prefix || 'wp_').replace(/[^A-Za-z0-9_]/g, '');
-	const attached = `SELECT COUNT(*) AS n FROM ${p}postmeta WHERE meta_key = '_wp_attached_file' AND meta_value = ${hex(rel)}`;
-	const inDir = dir ? `af.meta_value LIKE CONCAT(${hex(dir)}, '/%')` : `af.meta_value NOT LIKE '%/%'`;
-	const meta = `SELECT pm.meta_value AS v FROM ${p}postmeta pm JOIN ${p}postmeta af ON af.post_id = pm.post_id AND af.meta_key = '_wp_attached_file' WHERE pm.meta_key = '_wp_attachment_metadata' AND ${inDir} AND pm.meta_value LIKE CONCAT('%', ${hex('"' + base + '"')}, '%')`;
-	return { rel, base, attached, meta };
+	const attached = `(SELECT 'a' AS k, meta_value AS v FROM ${p}postmeta WHERE meta_key = '_wp_attached_file' AND meta_value = ${hex(rel)} LIMIT 1)`;
+	const meta = `(SELECT 'm' AS k, meta_value AS v FROM ${p}postmeta WHERE meta_key = '_wp_attachment_metadata' AND meta_value LIKE CONCAT('%', ${hex('"' + base + '"')}, '%') LIMIT ${META_CAP})`;
+	return { rel, base, dir, sql: `${attached} UNION ALL ${meta}` };
 }
 
-/** true (an attachment names the key), false (none does), or null (could not tell: the caller keeps the file). */
+/** true (an attachment names the key), false (none does), 'shape' (under uploads/ but not the dated attachment path), 'other' (not under uploads/), or null (could not tell). */
 async function referenced(query, prefix, key) {
-	const q = referenceQueries(prefix, key);
-	if (!q) return true; // not an upload file: never a candidate
-	const a = await query(q.attached);
-	if (!a || !a.ok || !a.rows) return null;
-	if (Number(a.rows[0] && a.rows[0][0]) > 0) return true;
-	const m = await query(q.meta);
-	if (!m || !m.ok || !m.rows) return null;
-	return m.rows.some((r) => metadataNames(r[0]).includes(q.base));
+	const k = String(key);
+	if (!k.startsWith('uploads/')) return 'other';
+	if (!isDatedAttachmentKey(k)) return 'shape';
+	const q = referenceQuery(prefix, key);
+	if (!q) return 'shape';
+	const a = await query(q.sql);
+	if (!a || !a.ok || !Array.isArray(a.rows)) return null;
+	let metaRows = 0;
+	let matched = false;
+	for (const r of a.rows) {
+		const kind = String(r[0]);
+		const val = r[1] == null ? '' : String(r[1]);
+		if (kind === 'a') return true;
+		if (kind !== 'm') continue;
+		metaRows++;
+		if (!metadataNames(val).includes(q.base)) continue;
+		const dir = metadataDir(val);
+		if (dir === null || dir === q.dir) matched = true;
+	}
+	if (matched) return true;
+	// A full metadata cap that did not match may have cut off the row that names the file.
+	if (metaRows >= META_CAP) return null;
+	return false;
+}
+
+/**
+ * Write `_pf-intent/<key>` before a put, only when the key does not exist yet.
+ * Does not throw: a failed head or a failed marker write is could-not-mark, and the caller's put still runs.
+ * Returns { marked, reason }.
+ */
+export async function markNewKey(bucket, key, { reqId = '', now = Date.now(), log = () => {} } = {}) {
+	try {
+		if (await bucket.head(key)) return { marked: false, reason: 'exists' };
+		const body = JSON.stringify({ req: reqId == null ? '' : String(reqId), t: now });
+		await bucket.put(markerKey(key), body);
+		return { marked: true, reason: 'created' };
+	} catch (e) {
+		log({ m: 'could-not-mark', key: String(key).slice(0, 200), error: String((e && e.message) || e).slice(0, 160) });
+		return { marked: false, reason: 'could-not-mark' };
+	}
+}
+
+/** Delete the markers of the keys this request created. A delete that fails leaves the marker for the sweep. */
+export async function clearMarkers(bucket, keys) {
+	for (const k of keys || []) {
+		try { await bucket.delete(markerKey(k)); } catch { /* a stale marker is swept by its reference check */ }
+	}
+}
+
+function sweepLine(out, extra) {
+	return {
+		m: 'media-sweep',
+		seen: out.seen,
+		'kept-attached': out.keptAttached,
+		deleted: out.deleted,
+		'kept-error': out.keptError,
+		'skipped-fresh': out.skippedFresh,
+		'kept-other': out.keptOther,
+		'kept-shape': out.keptShape,
+		...(extra || {}),
+	};
 }
 
 /**
  * One sweep. bucket: R2 (list, delete). query(sql): the MySQL read, {ok, rows}. release(key): the name reservation.
- * Returns { markers, swept, kept, fresh, errors }.
+ * Logs one media-sweep line. Returns the same counts.
  */
-export async function sweepUploadOrphans({ bucket, query, prefix = 'wp_', now = Date.now(), log = () => {}, release = async () => {}, max = SWEEP_MAX }) {
-	const out = { markers: 0, swept: 0, kept: 0, fresh: 0, errors: 0 };
-	const l = await bucket.list({ prefix: MARKER_PREFIX, include: ['customMetadata'], limit: max });
-	for (const o of l.objects || []) {
-		out.markers++;
-		if (!o.customMetadata || o.customMetadata.kind !== 'upload') continue; // not ours to act on
+export async function sweepUploadOrphans({ bucket, query, prefix = 'wp_', now = Date.now(), log = () => {}, release = async () => {}, max = SWEEP_MAX } = {}) {
+	const cap = Math.max(0, Math.min(Number(max) || 0, SWEEP_MAX));
+	const out = { seen: 0, keptAttached: 0, deleted: 0, keptError: 0, skippedFresh: 0, keptOther: 0, keptShape: 0 };
+	let listed;
+	try {
+		listed = await bucket.list({ prefix: MARKER_PREFIX, limit: cap });
+	} catch (e) {
+		log(sweepLine(out, { error: String((e && e.message) || e).slice(0, 160) }));
+		return out;
+	}
+	const objects = (listed && listed.objects ? listed.objects : []).slice(0, cap);
+	for (const o of objects) {
+		out.seen++;
 		const t = o.uploaded instanceof Date ? o.uploaded.getTime() : Number(o.uploaded);
 		if (!(now - t > STALE_MS)) {
-			out.fresh++;
+			out.skippedFresh++;
 			continue;
 		}
-		const key = o.key.slice(MARKER_PREFIX.length);
+		const key = String(o.key || '').startsWith(MARKER_PREFIX) ? String(o.key).slice(MARKER_PREFIX.length) : '';
+		if (!key) {
+			out.keptError++;
+			continue;
+		}
 		let ref;
 		try {
 			ref = await referenced(query, prefix, key);
@@ -121,19 +196,30 @@ export async function sweepUploadOrphans({ bucket, query, prefix = 'wp_', now = 
 			ref = null;
 		}
 		if (ref === null) {
-			out.errors++;
-			continue; // keep both; the next sweep asks again
-		}
-		if (ref) {
-			await bucket.delete(o.key);
-			out.kept++;
+			out.keptError++;
 			continue;
 		}
-		await release(key);
-		await bucket.delete(key);
-		await bucket.delete(o.key);
-		out.swept++;
-		log({ '@event': 'upload-orphan-swept', m: 'upload-orphan-swept', key: key.slice(0, 200), markerAgeS: Math.round((now - t) / 1000) });
+		if (ref === true || ref === 'other' || ref === 'shape') {
+			try {
+				await bucket.delete(o.key);
+				if (ref === true) out.keptAttached++;
+				else if (ref === 'shape') out.keptShape++;
+				else out.keptOther++;
+			} catch {
+				out.keptError++;
+			}
+			continue;
+		}
+		try {
+			await release(key);
+			await bucket.delete(key);
+		} catch {
+			out.keptError++;
+			continue; // the file is still there; the marker stays so the next run tries again
+		}
+		try { await bucket.delete(o.key); } catch { /* the file is gone; the marker is retried next run */ }
+		out.deleted++;
 	}
+	log(sweepLine(out));
 	return out;
 }

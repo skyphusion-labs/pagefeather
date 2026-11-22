@@ -378,7 +378,7 @@ jobs:
           php spikes/b2-wordpress/tests/mail-retry-health-test.php
       - name: "The idle cron gate: no PHP boot when nothing is due, back-off, never past the next event (#390)"
         run: node --test spikes/b2-wordpress/tests/cron-idle.test.mjs spikes/b2-wordpress/tests/cron-self-tick.test.mjs
-      - name: "Approach A upload orphans: markers on media uploads only, the sweep keeps every referenced file (#1039)"
+      - name: "Approach A upload orphans: a killed upload's files go after 15 minutes, a live attachment stays (#1039)"
         run: node --test spikes/b2-wordpress/tests/upload-intent.test.mjs
       - name: b-dosql the scheduled snapshot route (issue #533)
         # db-snapshot.mjs: SNAPSHOT_TOKEN only, gzip into the site's own bucket, read back; held, cut, too big and failed dumps store nothing.

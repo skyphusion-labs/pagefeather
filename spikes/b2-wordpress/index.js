@@ -23,7 +23,7 @@ import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-sn
 import { cronBounds, cronCleanDue, cronLegDue, cronAsBudgetMs, cronMore, cronBacklogNext, cronBacklogDue, cronBacklogGapMs, backlogStreak } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
 import { emailDueRoute, EMAIL_DUE_PATH, EMAIL_DUE_HEADER, aCronObjectOff, approachACronEnabled, approachACronScheduled, cronSelfTickOn, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort, cronBuildState } from './a-cron.mjs';
-import { isMediaUploadRequest, markerKey, sweepUploadOrphans, dropMarkersOn } from './upload-intent.mjs';
+import { isMediaUploadRequest, sweepUploadOrphans, markNewKey, clearMarkers } from './upload-intent.mjs';
 import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION, setResultHeader, takeResultHeader, turnstileRoute, readRouteFields, readGatedToken, encodeResult, TurnstileSlot, turnstileTimeoutMs, retryAfterFor } from './turnstile.mjs';
@@ -2352,7 +2352,10 @@ async function imageJob(B, job) {
 	for (const t of job.ops || []) h = h.transform(t);
 	const out = await h.output({ format: job.format, ...(job.quality ? { quality: job.quality } : {}) });
 	const bytes = new Uint8Array(await out.response().arrayBuffer());
-	if (job.dest) await B.put(job.dest, bytes, { httpMetadata: { contentType: job.format } });
+	if (job.dest) {
+		await uploadIntentMark(B, job.dest); // #1039: a sub-size written by the Images binding is a created key too
+		await B.put(job.dest, bytes, { httpMetadata: { contentType: job.format } });
+	}
 	return bytes;
 }
 // Set by the Edge Cache mu-plugin when content changes. Read after the request.
@@ -2605,29 +2608,23 @@ async function deleteFrameR2(req, keys) {
 	if (!failed && undoLog && sqlDb) undoLog.r2Forget(sqlDb, req);
 	return failed === 0;
 }
-// #1039, approach A (upload-intent.mjs, the lead's ruling): the media upload PHP run now running, or null. One PHP run
-// at a time (withPhp), so one slot. Holds the R2 keys this upload CREATED, each marked before its put.
+// #1039, approach A (upload-intent.mjs): the R2 keys the PHP request now running created, or null when this
+// is not approach A. One PHP run at a time (withPhp), so one slot. Each new key is marked before its put.
 let uploadRun = null;
 async function uploadIntentMark(B, key) {
 	if (!uploadRun) return;
-	try {
-		if (await B.head(key)) return; // an overwrite is never marked, so never swept
-		await B.put(markerKey(key), JSON.stringify({ kind: 'upload', t: Date.now() }), { customMetadata: { kind: 'upload' } });
-		uploadRun.push(String(key));
-	} catch (e) {
-		console.log(JSON.stringify({ m: 'upload-intent-mark-failed', error: String((e && e.message) || e).slice(0, 160) }));
-	}
+	const mark = await markNewKey(B, key, { reqId: runCallId || '', log: (e) => console.log(JSON.stringify(e)) });
+	if (mark.marked) uploadRun.push(String(key));
 }
-// PHP answered 2xx: this upload's files are its own. Its markers go (off the answer's path).
-async function uploadIntentClear(keys) {
-	for (const k of keys) {
-		try { await ENV.MEDIA.delete(markerKey(k)); } catch { /* a stale marker is swept by its reference check */ }
-	}
-}
-// The sweep at the start of a media upload, at most once per 10 minutes per site (OC_KV when bound; else per isolate).
+// The sweep at the start of a media upload, at most once per 10 minutes per site.
+// Throttle: OC_KV key pf:upload-sweep with expirationTtl 600. That is the KV approach A already binds
+// for the object-cache L2 (present or absent per site). With no OC_KV binding, uploadSweepAt is a
+// per-isolate timestamp of the same 10 minutes. The A_CRON tick calls runMediaSweep and does not take this throttle.
 let uploadSweepAt = 0;
 async function uploadSweepThrottled(env) {
-	if (!env.MEDIA || !dbHandler || typeof dbHandler.oneShot !== 'function') return;
+	// oneShot is the read that does not share the PHP connection (mysql-lean-bridge.js, the default approach A
+	// entry). The mysql2 entry does not register it, so the sweep does not run there.
+	if (!env || !env.MEDIA || !dbHandler || typeof dbHandler.oneShot !== 'function') return;
 	const KEY = 'pf:upload-sweep';
 	try {
 		if (env.OC_KV) {
@@ -2637,16 +2634,24 @@ async function uploadSweepThrottled(env) {
 			if (Date.now() - uploadSweepAt < 600000) return;
 			uploadSweepAt = Date.now();
 		}
-		const r = await sweepUploadOrphans({
+	} catch (e) {
+		// A broken throttle must not skip the sweep and must not fail the upload. Two isolates may both sweep.
+		console.log(JSON.stringify({ m: 'media-sweep-throttle', error: String((e && e.message) || e).slice(0, 160) }));
+	}
+	await runMediaSweep(env);
+}
+async function runMediaSweep(env) {
+	if (!env || !env.MEDIA || !dbHandler || typeof dbHandler.oneShot !== 'function') return;
+	try {
+		await sweepUploadOrphans({
 			bucket: env.MEDIA,
 			query: (sql) => dbHandler.oneShot(env, sql),
 			prefix: tablePrefix(env),
 			log: (e) => console.log(JSON.stringify(e)),
 			release: (k) => releaseReservedKey(k),
 		});
-		if (r.markers) console.log(JSON.stringify({ m: 'upload-sweep', ...r }));
 	} catch (e) {
-		console.log(JSON.stringify({ m: 'upload-sweep-failed', error: String((e && e.message) || e).slice(0, 160) }));
+		console.log(JSON.stringify({ m: 'media-sweep', seen: 0, 'kept-attached': 0, deleted: 0, 'kept-error': 0, 'skipped-fresh': 0, 'kept-other': 0, 'kept-shape': 0, error: String((e && e.message) || e).slice(0, 160) }));
 	}
 }
 
@@ -3819,6 +3824,8 @@ export class PhpRuntime extends DurableObject {
 			}
 			if (pulled.pulled) console.log(JSON.stringify({ m: 'alarm', pulledBy: 'a-cron-tick', plan: plan.action, wasInMs: pulled.was - tickNow }));
 			else if (due) console.log(JSON.stringify({ m: 'alarm', heldBy: 'a-cron-tick', idle: true, streak: idleStreak, inMs: Number(tickAlarm) - tickNow }));
+			// #1039: the A_CRON tick sweeps stale media markers. Bounded. A failure does not fail the tick.
+			await runMediaSweep(env);
 			return Response.json({ ok: true, tick: 'cron', alarm: watch.state, at: watch.at, ...(pulled.pulled ? { pulled: true } : {}) }, { headers: { 'cache-control': 'no-store' } });
 		}
 		const origin = raw.headers.get(ORIGIN_HEADER);
@@ -5182,10 +5189,11 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
 			ocReqBegin(); // #766
-			// #1039, approach A: a media upload marks the files it creates; the throttled sweep runs first, so an orphan's
-			// name is free again before this upload picks one.
-			uploadRun = dbHandler && isMediaUploadRequest(req.method, url.pathname, url.search) ? [] : null;
-			if (uploadRun) await uploadSweepThrottled(env);
+			// #1039: at the start of a media upload, sweep stale markers (once per 10 minutes per site) so a dead
+			// upload's name is free before this upload picks one. Marking itself is armed later, around handler.request.
+			// Null here so a request that died before its clear cannot collect this request's keys.
+			uploadRun = null;
+			if (dbHandler && isMediaUploadRequest(req.method, url.pathname, url.search)) await uploadSweepThrottled(env);
 			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, lazyWrites: stats.lazyWrites, rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry, ocCalls: stats.ocCalls, ocHits: stats.ocHits, l2N: stats.l2N, l2Ms: stats.l2Ms, l2Hits: stats.l2Hits, httpCalls: stats.httpCalls, httpMs: stats.httpMs, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
@@ -5265,11 +5273,23 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const wantOpcache = booted || (spikeOk && req.headers.get('x-perf-opcache') === '1');
 			const op0 = wantOpcache ? opcacheMark(await opcacheStats(php), php) : null;
 			const tPhp = Date.now();
+			// #1039: approach A marks each R2 key this request creates. Armed here, after the early returns, so a
+			// probe or /_install does not leave markers it never clears.
+			uploadRun = dbHandler ? [] : null;
 			lastMemTrace = null;
 			const r = await handler.request({ url: url.pathname + url.search, method: req.method, headers, body });
 			// #716: NOT CPU. Date.now() moves only at I/O on Cloudflare, so this is PHP's wall time at I/O points; a CPU-bound
 			// render reads near 0. Cite the invocation's $workers.cpuTimeMs for CPU (docs/perf-dosql.md, "Citing CPU").
 			const phpOnlyMs = Date.now() - tPhp;
+			// #1039: PHP answered, any status. This request's files stay; its markers go in waitUntil.
+			// A kill before this line leaves the markers, and the sweep decides.
+			if (uploadRun && uploadRun.length) {
+				const keys = uploadRun.slice();
+				const p = clearMarkers(ENV.MEDIA, keys);
+				if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(p);
+				else await p;
+			}
+			uploadRun = null;
 			const op1 = wantOpcache ? opcacheMark(await opcacheStats(php), php) : null;
 			// Approach A: close this request's MySQL connection after the response.
 			if (dbHandler) (ctx ? ctx.waitUntil(dbHandler.end()) : dbHandler.end());
@@ -5440,14 +5460,6 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			if (qtrace) { console.log(JSON.stringify({ m: 'qtrace', ...memIdOf(req, env), iso: ISOLATE_ID, method: req.method, status: r.httpStatusCode, ...qtrace.summary() })); qtrace = null; }
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			if (tracing()) fileTrace.end({ status: r.httpStatusCode });
-			// #1039: PHP answered 2xx, so this upload's files stay; drop its markers off the answer's path. Any other answer
-			// (a 500 after the files were stored is the same orphan as a kill) leaves them for the sweep.
-			if (uploadRun && uploadRun.length && dropMarkersOn(r.httpStatusCode)) {
-				const p = uploadIntentClear(uploadRun);
-				if (ctx && ctx.waitUntil) ctx.waitUntil(p);
-				else await p;
-			}
-			uploadRun = null;
 			evictLazy();
 			if (remotePacks) remotePacks.endRequest(); // #563: held packs live for one request
 			if (sitePacks) sitePacks.endRequest(); // #569: the site packs too (not the hot pack)

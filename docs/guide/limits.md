@@ -236,3 +236,11 @@ Yoast SEO (67.94 MiB), All in One SEO (67.53 MiB) and Elementor (83.84 MiB) were
 
 #1022 and #1253 are open. #1022 is the memory reset when `post-new.php` runs on a hot isolate. #1253 is the compiled-script set a cold boot opens.
 
+## A killed media upload on approach A (#1039)
+
+On approach A, an upload writes its files and then writes the attachment row. Those are separate steps. If the isolate is killed between them, the files can remain with no attachment, and the file name stays taken.
+
+A killed upload can leave its files for up to one upload or one cron tick after 15 minutes. A partly saved attachment (a row without its sub-sizes) is kept, as WordPress keeps it.
+
+The next media upload, or the cron tick when cron is on, removes a file only when its key is core's dated attachment path (`uploads/YYYY/MM/<file>`, a four-digit year, a month 01-12, and a file name with no further folder) and no attachment names it. A stale marker on any other key under `uploads/` (fonts, WooCommerce downloads and logs, a plugin folder) drops the marker and keeps the file. A database error during that check keeps the file.
+
