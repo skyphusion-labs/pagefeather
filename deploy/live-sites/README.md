@@ -7,7 +7,7 @@ Worker's settings, so a redeploy renders the same bindings: `deploy/deploy.sh` r
 `MEDIA`, `MEDIA_BUCKET`, `SITE_ORIGIN`, `HTTP_ALLOW_HOSTS`, and `WOO_ACTIVE` (0 or 1). No secret ever goes here.
 
 `WOO_ACTIVE=1` builds the OPcache with WooCommerce primed. A site with WooCommerce active needs it, or every cold
-request compiles WooCommerce inside the isolate (#313). The limit that compile can hit is the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](../../docs/known-limitations.md#memory-limits-the-three-figures)). The workflow refuses the deploy when the live site's
+request compiles WooCommerce inside the isolate (#313). The limit that compile can hit is the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](../../docs/guide/limits.md#memory-limits-the-three-figures)). The workflow refuses the deploy when the live site's
 Store API answers 200 and the file does not set `WOO_ACTIVE=1` (#373).
 
 Before a deploy the workflow reads the live Worker and refuses unless its `MEDIA` bucket,

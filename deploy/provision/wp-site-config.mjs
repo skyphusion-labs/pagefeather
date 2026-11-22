@@ -693,7 +693,7 @@ export function emailDlqName(name) {
 // Analytics Engine creates the dataset on first write, so there is no create step;
 // the name is only the binding's dataset field and the SQL table the operator
 // queries. It is NOT a plain SQL identifier (it has hyphens), so the operator read
-// query double-quotes it (docs/operator.md).
+// query double-quotes it (docs/guide/operator.md).
 export function analyticsDatasetName(name) {
   return `wp-wfp-${name}-analytics`;
 }
