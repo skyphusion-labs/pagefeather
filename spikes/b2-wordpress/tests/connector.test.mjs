@@ -138,3 +138,15 @@ test('#1169 onOpen reports each successful open, its time and the attempts it to
 	assert.equal(seen.length, 1, 'a reused connection is not an open');
 	await c.end();
 });
+
+// #1359 (a): the query bound's setting.
+test('#1359 queryTimeoutMs: 30 s by default; DB_QUERY_TIMEOUT_MS overrides; invalid or out of range falls back', async () => {
+	const c = await import('../connector.mjs');
+	assert.equal(c.QUERY_MS, 30000);
+	assert.equal(c.queryTimeoutMs({}), 30000);
+	assert.equal(c.queryTimeoutMs(null), 30000);
+	assert.equal(c.queryTimeoutMs({ DB_QUERY_TIMEOUT_MS: '45000' }), 45000);
+	assert.equal(c.queryTimeoutMs({ DB_QUERY_TIMEOUT_MS: 'x' }), 30000);
+	assert.equal(c.queryTimeoutMs({ DB_QUERY_TIMEOUT_MS: '0' }), 30000);
+	assert.equal(c.queryTimeoutMs({ DB_QUERY_TIMEOUT_MS: '9999999' }), 600000, 'at most 10 minutes');
+});

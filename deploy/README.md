@@ -254,6 +254,29 @@ The hint is not a promise. An `enam` object landed in EWR two times in three and
 
 Each `NAME` has its own Terraform workspace, so two sites never share state.
 
+## When a database query does not answer (#1359)
+
+On approach A (Hyperdrive), each MySQL query is bounded.
+
+| setting | default | what it bounds |
+|---|---|---|
+| `DB_QUERY_TIMEOUT_MS` | `30000` | How long one query may take, in milliseconds (1 to 600,000). |
+
+**On the bound:**
+- the connection is destroyed and never reused;
+- the statement fails as a lost connection (MySQL error 2013), so WordPress gets a database error instead of a request that never ends;
+- the statement is not retried;
+- inside a transaction, the rest of that request fails, as for any lost connection;
+- the Worker logs `@event query-timeout`.
+
+**Why it exists:** a query that never answers held its PHP run, and with it the isolate's PHP lock. Every later request on that isolate was then refused with a 503, for as long as the isolate lived (cf759hl, #1277: one isolate for 56 minutes).
+
+**What it does not cover yet:** the bound runs in the request's own context. When a client hangs up mid-request, the platform may stop that context's work, and then this bound cannot fire either. That case is being measured, with a second fix planned (#1359).
+
+**Why 30 s:** in three full WooCommerce suite runs (12,175 requests), no request came near it. The highest average per query in any request was 214 ms. The longest requests (product batches, 46 to 49 s of database time) are thousands of queries of about 14 ms each. Those totals cannot rule out one long query inside a batch, which is why the bound can be raised.
+
+**Setting it:** the Worker reads `DB_QUERY_TIMEOUT_MS` as a plain variable. `deploy.sh`, `deploy/wfp` and the one-click provisioner do not render it yet, so a site runs the 30 s default until they do (#1359).
+
 ## When a PHP object does not answer in time (#703, #708)
 
 Every request the front Worker hands to a PHP Durable Object (the b-dosql object, and approach A's overflow pool) has two time bounds. They are recorded settings: give one to `deploy.sh`, `deploy/wfp/site` or the one-click provisioning (`deploy/provision`, `objectTimeInputs`) and it is rendered into the Worker's `[vars]` (`deploy/object-time.sh`), and `deploy/wfp` keeps it on later updates (`site_settings.py`). Unset means the code default.

@@ -108,3 +108,33 @@ export function createConnector(factory, { attempts = 2, connectMs = CONNECT_MS,
 		},
 	};
 }
+
+// #1359 (a): each QUERY is bounded too. A query that never settles held its PHP run, and with it the isolate's lock: every
+// later request on that isolate was shed for as long as the isolate lived (cf759hl, #1277 arm (b): one for 56 minutes).
+// DB_QUERY_TIMEOUT_MS (1 ms to 10 minutes; 30 s by default): no measured path runs one query near 30 s (the highest
+// per-query average in any request was 214 ms, and the longest requests are thousands of ~14 ms queries, #1359).
+// On the bound the caller gets a QueryTimeout (errno 2013, "Lost connection to MySQL server during query"): it destroys
+// the connection, never reuses it, and never retries the statement (a retry could wait the bound again).
+export const QUERY_MS = 30000;
+const QUERY_MAX_MS = 600000;
+export function queryTimeoutMs(env) {
+	const raw = env && env.DB_QUERY_TIMEOUT_MS;
+	if (raw === undefined || raw === null || !/^[0-9]+$/.test(String(raw).trim())) return QUERY_MS;
+	const n = Number(raw);
+	if (n <= 0) return QUERY_MS;
+	return Math.min(QUERY_MAX_MS, n);
+}
+export class QueryTimeout extends Error {
+	constructor(ms) {
+		super('mysql: query timed out after ' + ms + ' ms (DB_QUERY_TIMEOUT_MS): connection dropped');
+		this.errno = 2013;
+		this.timedOut = true;
+		this.ms = ms;
+	}
+}
+/** The query's result, or a QueryTimeout after ms. */
+export async function boundedQuery(p, ms) {
+	const r = await within(Promise.resolve(p), ms);
+	if (r === TIMED_OUT) throw new QueryTimeout(ms);
+	return r;
+}
