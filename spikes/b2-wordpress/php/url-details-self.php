@@ -29,7 +29,7 @@
  * Refused, as before (404 no_response), never guessed:
  * - a URL that names no post or page (an archive, a term, an author, search, a custom route);
  * - a post an anonymous visitor cannot see (draft, private, trash): stock's anonymous fetch gets a 404 too;
- * - a theme without title-tag support (it prints its own <title>).
+ * - a CLASSIC theme without title-tag support (it prints its own <title>). A block theme prints core's title.
  * Every other request to the site's own URL (Site Health's loopback, the file editor's check, HTTPS detection, Action
  * Scheduler's async runner, a plugin calling its own REST route) stays refused on an uncached URL.
  */
@@ -100,7 +100,11 @@ function skyphusion_url_details_self_title( $target ) {
 add_filter(
 	'skyphusion_http_self_refused',
 	function ( $answer, $url, $args, $method ) {
-		if ( null !== $answer || 'GET' !== $method || empty( $args['skyphusion_url_details'] ) || ! current_theme_supports( 'title-tag' ) ) {
+		// A block theme prints core's document title whether or not it declares title-tag (block-template.php,
+		// _block_template_render_title_tag); core adds no title-tag support for block themes. A classic theme without
+		// title-tag prints its own <title>, so it is refused, never guessed (#1326 live proof, 2026-11-22).
+		$core_title = current_theme_supports( 'title-tag' ) || ( function_exists( 'wp_is_block_theme' ) && wp_is_block_theme() );
+		if ( null !== $answer || 'GET' !== $method || empty( $args['skyphusion_url_details'] ) || ! $core_title ) {
 			return $answer;
 		}
 		$target = skyphusion_url_details_self_target( $url );

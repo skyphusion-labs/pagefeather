@@ -33,6 +33,7 @@ function __( $s ) { return $s; }
 function esc_html( $s ) { return htmlspecialchars( $s, ENT_QUOTES ); }
 function get_status_header_desc( $c ) { return 'OK'; }
 function current_theme_supports( $f ) { return 'title-tag' === $f && ( $GLOBALS['title_tag'] ?? true ); }
+function wp_is_block_theme() { return $GLOBALS['block_theme'] ?? false; }
 $GLOBALS['posts'] = array(
 	12 => (object) array( 'ID' => 12, 'post_title' => 'Test Page 2', 'post_status' => 'publish', 'post_type' => 'page' ),
 	13 => (object) array( 'ID' => 13, 'post_title' => 'Draft Page', 'post_status' => 'draft', 'post_type' => 'page' ),
@@ -114,7 +115,14 @@ $r = $bridge( false, ud_args( $u5 ), $u5 );
 check( 'a URL that is not a post (an archive): refused, not guessed', $r instanceof WP_Error ? 'refused' : 'answered', 'refused' );
 $GLOBALS['title_tag'] = false;
 $r = $bridge( false, ud_args( $u ), $u );
-check( 'a theme without title-tag (its own <title>): refused, not guessed', $r instanceof WP_Error ? 'refused' : 'answered', 'refused' );
+check( 'a CLASSIC theme without title-tag (its own <title>): refused, not guessed', $r instanceof WP_Error ? 'refused' : 'answered', 'refused' );
+// #1326 live proof, cf759hw 2026-11-22: a BLOCK theme has no title-tag support (core's _add_default_theme_supports does
+// not add it), yet its template prints core's document title unconditionally (block-template.php,
+// _block_template_render_title_tag). The guard refused every block theme, so url-details stayed 404 live.
+$GLOBALS['block_theme'] = true;
+$r = $bridge( false, ud_args( $u ), $u );
+check( 'a BLOCK theme without title-tag support: answered with the document title', title_of( $r ), 'Test Page 2 - Shop' );
+$GLOBALS['block_theme'] = false;
 $GLOBALS['title_tag'] = true;
 // Each layer's guard on its own (the bridge's and the plugin's host checks would otherwise mask each other):
 $GLOBALS['reply'] = $SELF;
