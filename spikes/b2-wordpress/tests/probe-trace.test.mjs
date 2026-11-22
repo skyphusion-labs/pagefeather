@@ -42,3 +42,20 @@ test('index.js logs it at the gateway entry, the Pages entry and the PHP run sta
 	const h = src.slice(src.indexOf('async function handleInner(req, env, url, spikeOk, maxBody, ctx) {'), src.indexOf('async function handleInner(req, env, url, spikeOk, maxBody, ctx) {') + 300);
 	assert.match(h, /probeTrace\(req, 'php'\);/, 'a PHP run');
 });
+
+// The lead's question on #1366: what does this cost on normal traffic (no x-pf-probe)? It must be NO line and no work past
+// one header read. A request whose url getter throws proves the URL is never parsed; a counted get() proves one header read.
+test('no x-pf-probe (normal traffic): no line, and nothing past ONE header read (the URL is never touched)', async () => {
+	const m = await import('../probe-trace.mjs');
+	const out = [];
+	const mk = (val) => {
+		const reads = [];
+		return { reads, req: { method: 'GET', get url() { throw new Error('the URL was read'); }, headers: { get: (k) => { reads.push(k); return val; } } } };
+	};
+	for (const [label, val] of [['no header', null], ['an invalid id', 'bad id!']]) {
+		const { req, reads } = mk(val);
+		assert.doesNotThrow(() => m.probeTrace(req, 'gateway', { log: (o) => out.push(o) }), label);
+		assert.deepEqual(reads, ['x-pf-probe'], label + ': exactly one header read');
+	}
+	assert.equal(out.length, 0, 'no line at all');
+});
