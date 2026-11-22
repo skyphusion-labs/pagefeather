@@ -1478,10 +1478,11 @@ site_footprint() { # site_footprint <name>
   case "$c" in 200) echo "bucket yes" ;; 404) echo "bucket no" ;; *) echo "bucket unknown" ;; esac
   # The search index (#330): a part when WP_VECTORIZE_SEARCH is on, or whenever one exists.
   case "$(search_index_state "$s")" in present) echo "search yes" ;; gone) ! search_on || echo "search no" ;; *) echo "search unknown" ;; esac
-  # #1319: kind a's Hyperdrive config and object cache namespace, on a kind a site only: the run's (site add, or
-  # KIND=a site remove for a failed add with no workspace yet) or the recorded one (site_vars, REC_KIND). A b-dosql
-  # site has neither, and its footprint makes no call for them.
-  if [ "${SITE_KIND:-b-dosql}" = a ] || { [ "${REC_SITE:-}" = "$s" ] && [ "${REC_KIND:-}" = a ]; }; then
+  # #1319: kind a's Hyperdrive config and object cache namespace, by name: for a kind a add (SITE_KIND), a recorded
+  # kind a site (site_vars, REC_KIND), and EVERY remove (FOOTPRINT_KIND_A=1, set by site remove): a kind a add that
+  # failed before its workspace leaves a config holding one of the account's 25, and a remove must find it whatever
+  # the run says. A b-dosql add's footprint makes no call for them.
+  if [ "${SITE_KIND:-b-dosql}" = a ] || [ "${FOOTPRINT_KIND_A:-0}" = 1 ] || { [ "${REC_SITE:-}" = "$s" ] && [ "${REC_KIND:-}" = a ]; }; then
     echo "hyperdrive $(hd_state "$s")"
     echo "ockv $(oc_kv_state "$s")"
   fi

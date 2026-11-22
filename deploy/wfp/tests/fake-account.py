@@ -14,6 +14,9 @@ Paths: /workers/scripts (list), /workers/scripts/<name>,
 /workers/dispatch/namespaces/wp-wfp/scripts (list), /<name> and /<name>/bindings (state "bindings"),
 /storage/kv/namespaces/kv1/values/<host>, /r2/buckets/<b>, /s3/<b>?list-type=2,
 /site/<dispatcher>/ (the page).
+#1319: /hyperdrive/configs (list, one page) and /storage/kv/namespaces (list): a site's "hyperdrive" (a config id) and
+"ockv" (a namespace id) state keys, absent by default, so a site with neither answers "none" for both, as a b-dosql
+site does live.
 """
 import http.server, json, sys, urllib.parse
 
@@ -67,6 +70,12 @@ class H(http.server.BaseHTTPRequestHandler):
             if sites.get(n, {}).get("script"):
                 return self.send(200, {"success": True, "result": {"script": {"id": "site-" + n}}})
             return self.send(404, {"success": False})
+        if p == "/hyperdrive/configs":
+            r = [{"id": v["hyperdrive"], "name": "wp-wfp-" + n} for n, v in sites.items() if v.get("hyperdrive")]
+            return self.send(200, {"success": True, "result": r, "result_info": {"page": 1, "per_page": 100, "count": len(r), "total_count": len(r), "total_pages": 1}})
+        if p == "/storage/kv/namespaces":
+            r = [{"id": v["ockv"], "title": "wp-wfp-%s-oc" % n} for n, v in sites.items() if v.get("ockv")]
+            return self.send(200, {"success": True, "result": r})
         if p.startswith("/storage/kv/namespaces/kv1/values/"):
             n = p.rsplit("/", 1)[1].split(".", 1)[0][3:]
             e = sites.get(n, {}).get("entry")

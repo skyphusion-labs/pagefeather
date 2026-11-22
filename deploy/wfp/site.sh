@@ -191,16 +191,17 @@ elif [ "$cmd" = down ]; then
   fi
   gone "site map entry $HOST" "/storage/kv/namespaces/$KV_ID/values/$HOST"
   gone "bucket $(media_bucket "$s")" "/r2/buckets/$(media_bucket "$s")"
-  # #1319: a kind a site's Hyperdrive config, after the user Worker that binds it and the workspace (by its name, so a
-  # config left by a failed add goes too). Its object cache namespace went with the workspace; read back by its title.
-  if [ "$SITE_KIND" = a ]; then
+  # #1319: the Hyperdrive config wp-wfp-<name>, after the user Worker that binds it and the workspace, on EVERY down:
+  # by its name, so a config left by a failed kind a add (no workspace, no recorded kind) goes too. The object cache
+  # namespace went with the workspace; read back by its title. A b-dosql site has neither and reads "none".
+  {
     log "site $s: Hyperdrive config $(hd_name "$s") and object cache namespace $(oc_kv_title "$s")"
     hd_delete "$s" || exit 1
     case "$(oc_kv_state "$s")" in
       no) echo "  object cache namespace $(oc_kv_title "$s"): none (read back)" ;;
       *) echo "  object cache namespace $(oc_kv_title "$s") is NOT known to be gone: stopping" >&2; exit 1 ;;
     esac
-  fi
+  }
   rm -f "$APP/wrangler.deploy.wfp-$s.toml" "$GEN/$D.toml"
   echo "site $s: down"
 else

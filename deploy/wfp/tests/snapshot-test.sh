@@ -65,6 +65,17 @@ fp() { (. "$LIB"; site_footprint "$1") 2>/dev/null; }
 f1=$(fp one); f3=$(fp three)
 ok "site_footprint of a full site" "$( (. "$LIB"; footprint_present "$f1") && echo 1 || echo 0)"
 ok "site_footprint of an absent site" "$( (. "$LIB"; footprint_absent "$f3") && echo 1 || echo 0)"
+# #1319: a kind a add that failed before its workspace leaves only its Hyperdrive config. Every remove looks for it by
+# name (FOOTPRINT_KIND_A=1, site remove), so the site is NOT absent and the remove goes on to delete it.
+python3 -I -c 'import json, sys
+s = json.load(open(sys.argv[1])); s["sites"]["orphan"] = {"hyperdrive": "%032x" % 7}
+json.dump(s, open(sys.argv[1], "w"))' "$T/state.json"
+fo=$(FOOTPRINT_KIND_A=1 fp orphan)
+ok "#1319 a remove's footprint sees a leftover Hyperdrive config by name (hyperdrive yes)" "$(printf '%s\n' "$fo" | grep -qx 'hyperdrive yes' && echo 1 || echo 0)"
+ok "#1319 so that site is NOT absent: remove deletes the config instead of saying no site" "$( (. "$LIB"; footprint_absent "$fo") && echo 0 || echo 1)"
+ok "#1319 a remove reads none for a site with neither part (ockv no, hyperdrive no)" "$(f=$(FOOTPRINT_KIND_A=1 fp three); printf '%s\n' "$f" | grep -qx 'hyperdrive no' && printf '%s\n' "$f" | grep -qx 'ockv no' && echo 1 || echo 0)"
+ok "#1319 control: a b-dosql add's footprint makes no kind a lookup" "$(fp orphan | grep -qE '^(hyperdrive|ockv) ' && echo 0 || echo 1)"
+cp "$T/base.json" "$T/state.json"
 set_state 's["sites"]["three"] = {"bucket": []}'
 f3b=$(fp three)
 ok "a site with only its bucket left is neither absent nor present" "$( (. "$LIB"; ! footprint_absent "$f3b" && ! footprint_present "$f3b") && echo 1 || echo 0)"
