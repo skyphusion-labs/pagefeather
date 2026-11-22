@@ -176,7 +176,7 @@ function plainTitle(label, value) {
   return t;
 }
 
-function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, requestFrames, siteName, siteTitle } = {}) {
+function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, requestFrames, siteName, siteTitle, opcacheRemote, siteRemote } = {}) {
   if (!siteOrigin) throw new Error('bDosqlVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   if (requestFrames !== undefined && requestFrames !== 'on' && requestFrames !== 'off') {
     throw new Error(`bDosqlVars: requestFrames must be 'on', 'off' or unset, not ${JSON.stringify(requestFrames)}`);
@@ -222,7 +222,17 @@ function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mail
   const opcacheMc = opcacheStoreMc({ wooActive, importPlugins, plugins, store }); // #610: b-dosql only
   if (opcacheMc) vars.OPCACHE_MC = opcacheMc;
   assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed });
+  assignRemotePacks(vars, { opcacheRemote, siteRemote });
   return vars;
+}
+
+// #1036: the remote packs, the same vars deploy.sh renders. Off unless the caller says the bundle
+// carries them (an older bundle, or one built with OPCACHE_REMOTE=0, passes false and the site
+// stays as before). Site-add cannot turn the knobs off once the bundle carries the index.
+function assignRemotePacks(vars, { opcacheRemote, siteRemote }) {
+  if (siteRemote === true && opcacheRemote !== true) throw new Error('SITE_REMOTE needs OPCACHE_REMOTE');
+  if (opcacheRemote === true) vars.OPCACHE_REMOTE = 'on';
+  if (siteRemote === true) vars.SITE_REMOTE = 'on';
 }
 
 // The b-dosql descriptor table. The five always-on entries ARE the old inline
@@ -586,6 +596,8 @@ export function aVars({
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
   // #715 review3 6: the PHP-object time bounds (the overflow pool), objectTimeInputs.
   objectCallDeadlineS, objectStartByS, objectDisconnectShed,
+  // #1036: on only when the bundle carries the packs.
+  opcacheRemote, siteRemote,
 } = {}) {
   if (!siteOrigin) throw new Error('aVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
@@ -629,6 +641,7 @@ export function aVars({
   }
   assignPageCacheProduct(vars, { wooActive, importPlugins, plugins, pageCacheProductTtl, store });
   assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed });
+  assignRemotePacks(vars, { opcacheRemote, siteRemote });
   return Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text }));
 }
 
@@ -651,6 +664,7 @@ export function aBindings({
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
   objectCallDeadlineS, objectStartByS, objectDisconnectShed,
   siteName, siteTitle,
+  opcacheRemote, siteRemote,
 } = {}) {
   if (!mediaBucket) throw new Error('aBindings: mediaBucket is required');
   if (!hyperdriveId) throw new Error('aBindings: hyperdriveId is required (the Hyperdrive config id from onboarding)');
@@ -660,7 +674,7 @@ export function aBindings({
   // only if the caller already knows it (e.g. a re-provision passing the id).
   if (ocKvNamespaceId) ocKv.namespace_id = ocKvNamespaceId;
   return [
-    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, siteName, siteTitle }),
+    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, siteName, siteTitle, opcacheRemote, siteRemote }),
     { type: 'images', name: 'IMAGES' },
     { type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket },
     { type: 'hyperdrive', name: 'HYPERDRIVE', id: hyperdriveId },
