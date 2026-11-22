@@ -116,6 +116,8 @@ render_conf() {
   [ -z "${CRON_INTERVAL_MS+x}" ] || echo "CRON_INTERVAL_MS = \"$CRON_INTERVAL_MS\""
   # The Worker writes it into wp-runtime.php as a PHP constant.
   [ -z "${HYPERDRIVE_SQL_MODE+x}" ] || echo "HYPERDRIVE_SQL_MODE = \"$HYPERDRIVE_SQL_MODE\""
+  # #1359 measure first: the operator-only cancel probe (cancel-probe.mjs). Rendered only for the exact value "on".
+  [ "${CANCEL_PROBE:-}" != on ] || echo 'CANCEL_PROBE = "on"'
   # #666: the measured object cache and lazy nodes, from aVars (the provisioning path's one source).
   if [ "$VARIANT" = a ]; then SITE_ORIGIN="$SITE_ORIGIN" OBJECT_CACHE_VERSIONS="${OBJECT_CACHE_VERSIONS:-1}" WOO_HPOS_CACHE="${WOO_HPOS_CACHE:-on}" node "$ROOT/deploy/provision/a-vars-toml.mjs" vars || return 1; fi
   # #394: OPCACHE_REMOTE, SITE_REMOTE, RECYCLE_WASM_MIB (a-settings.sh). Nothing when unset. #646: PHP_OVERFLOW.
