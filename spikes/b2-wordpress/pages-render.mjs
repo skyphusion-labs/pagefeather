@@ -21,3 +21,27 @@ export function placedRenderRequest(req) {
 export function isPlacedRender(req) {
 	return !!(req && req.headers && req.headers.get(PAGES_RENDER_HEADER) === '1');
 }
+
+// #1328: the gateway's answer to a placed render is never storable. Before #1296 the default entrypoint never answered
+// with a storable cloudflare-cdn-cache-control (Pages' cache consumed it). Since #1296 it did, and a cookieless guest
+// render reached shoppers with cart cookies (cf759hl /classic-cart/ HIT, no x-entrypoint). The directive and the purge
+// tag travel to Pages in these private headers; Pages, the one cached entrypoint, restores them on the answer it caches.
+export const PLACED_CDN_CC_HEADER = 'x-pf-placed-cdn-cc';
+export const PLACED_CACHE_TAG_HEADER = 'x-pf-placed-cache-tag';
+export function sealPlacedCache(headers, cdnCc, tag) {
+	headers.set('cloudflare-cdn-cache-control', 'no-store');
+	headers.delete('cache-tag');
+	headers.set(PLACED_CDN_CC_HEADER, cdnCc);
+	headers.set(PLACED_CACHE_TAG_HEADER, tag);
+}
+// Returns whether a storable directive was restored. With none (not cacheable), the gateway's no-store stays.
+export function unsealPlacedCache(headers) {
+	const cc = headers.get(PLACED_CDN_CC_HEADER);
+	const tag = headers.get(PLACED_CACHE_TAG_HEADER);
+	headers.delete(PLACED_CDN_CC_HEADER);
+	headers.delete(PLACED_CACHE_TAG_HEADER);
+	if (!cc) return false;
+	headers.set('cloudflare-cdn-cache-control', cc);
+	if (tag) headers.set('cache-tag', tag);
+	return true;
+}

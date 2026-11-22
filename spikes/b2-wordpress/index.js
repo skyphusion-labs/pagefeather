@@ -77,7 +77,7 @@ import { Container, ContainerProxy, getContainer } from '@cloudflare/containers'
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
 import { bootPhases } from './boot-phases.mjs';
-import { rendersInWorker, placedRenderRequest, isPlacedRender } from './pages-render.mjs';
+import { rendersInWorker, placedRenderRequest, isPlacedRender, sealPlacedCache, unsealPlacedCache } from './pages-render.mjs';
 import { memfsHeld, fsSampleWhy } from './memfs-held.mjs';
 import { plainFileCount } from './opcache-compiled.mjs';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
@@ -2457,9 +2457,11 @@ function pageCacheHeaders(req, url, r, out, env, failed = 0) {
 		// not sent on). The browser must ask again (no-cache): there is no Vary: Cookie
 		// now, so a browser that kept the page would show the logged-out copy after a login.
 		// PAGE_CACHE_PRODUCT_TTL (#628 C2, off by default) gives product pages a shorter TTL.
-		out.set('cloudflare-cdn-cache-control', edgeCacheControl(ttl, productTtl(env), isProductPage(r.headers)));
+		// #1328: on Pages' placed render the GATEWAY answers; its answer is never storable, and Pages restores this.
+		const cdn = edgeCacheControl(ttl, productTtl(env), isProductPage(r.headers));
+		if (isPlacedRender(req)) sealPlacedCache(out, cdn, 'wp-pages');
+		else { out.set('cloudflare-cdn-cache-control', cdn); out.set('cache-tag', 'wp-pages'); }
 		out.set('cache-control', 'no-cache');
-		out.set('cache-tag', 'wp-pages');
 	} else {
 		// Not stored at the edge, also when WordPress sent its own no-cache (which the
 		// cache would store as stale).
@@ -4733,6 +4735,8 @@ export class Pages extends WorkerEntrypoint {
 		const r = rendersInWorker(this.env) ? await this.ctx.exports.default.fetch(placedRenderRequest(req)) : await site.fetch(req, this.env, this.ctx); // #1277 option 1 (pages-render.mjs)
 		// So a test can see which entrypoint answered (the gateway sets nothing).
 		const out = new Response(r.body, r);
+		// #1328: the gateway's placed answer carried its cache directive privately (pages-render.mjs); restore it here.
+		unsealPlacedCache(out.headers);
 		out.headers.set('x-entrypoint', 'pages');
 		// #628: when PHP rendered this answer. A cached copy keeps it (page-stamp.mjs).
 		stampRendered(out.headers);
