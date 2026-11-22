@@ -293,13 +293,15 @@ const hdConfig = { id: HD, name: 'shopdb', origin: { scheme: 'mysql', host: 'db.
 await ok('an approach A one-click store renders the primed packs (OPCACHE_A index) the same way', async () => {
   const cf = fakeCloudflare({ hyperdrive: { [HD]: hdConfig } });
   const env = envWith({ ...dosqlFiles, ...aFiles });
-  const c = await connectDatabase(env, { body: { hyperdriveId: HD, provider: 'azure' }, fetchImpl: cf.fetchImpl });
+  // #1063: a new Hyperdrive store needs the database region, or addSite refuses before the packs render.
+  const c = await connectDatabase(env, { body: { hyperdriveId: HD, provider: 'azure', region: 'azure:westus2' }, fetchImpl: cf.fetchImpl });
   assert(c.ok, JSON.stringify(c));
   const r = await addSite(env, { body: { name: 'bigshop', tier: 'a', database: HD }, fetchImpl: cf.fetchImpl, dispatcherSource: DISPATCHER_SRC });
   assert(r.ok && r.tier === 'a', JSON.stringify(r));
   assert(!cf.calls.some((c) => c.unknown), `unknown ${JSON.stringify(cf.calls.filter((c) => c.unknown).map((c) => c.method + ' ' + c.path))}`);
   const site = sitePut(cf, 'site-bigshop');
   assert(site && site.metadata.main_module === 'index-a-lean.js', 'not the approach A module');
+  assert(JSON.stringify(site.metadata.placement) === JSON.stringify({ mode: 'targeted', region: 'azure:westus2' }), `placement ${JSON.stringify(site.metadata.placement)}`);
   const vars = varsOf(site.metadata);
   assert(vars.OPCACHE_REMOTE === 'on' && vars.SITE_REMOTE === 'on', JSON.stringify(vars));
   assert(JSON.stringify(site.metadata.assets.config.run_worker_first) === JSON.stringify(['/_pf/*']), 'no /_pf/*');
