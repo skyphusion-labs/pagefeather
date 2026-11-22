@@ -75,6 +75,9 @@ jobs:
         run: bash deploy/release/tests/release-notices-test.sh
       - name: a product bundle ships the notices of the engine it built; approach A defaults to the lean engine (#771, #1027)
         run: bash deploy/release/tests/bundle-notices-test.sh
+      - name: Release bundles ship the remote packs (#1036)
+        # Offline. A fixture tree stands in for the WordPress build. Both engines.
+        run: bash deploy/release/tests/bundle-packs-test.sh
       - name: the lean engine prerelease is assembled only from the pinned bytes, with its notices (#771)
         run: bash engine/tools/publish-lean-test.sh
       - name: Live-site code redeploys refuse a mismatch (fleet-chezmoi#2620)
@@ -711,6 +714,7 @@ jobs:
           bash deploy/wfp/tests/conformance-recorded-test.sh
           bash deploy/wfp/tests/obs-wfp-live-test.sh
           node deploy/provision/tests/ops-test.mjs
+          node deploy/provision/tests/assets-upload-test.mjs
           node deploy/provision/tests/vendor-sync-test.mjs
           node deploy/provision/tests/provision-test.mjs
           node deploy/provision/tests/remove-site-test.mjs
@@ -730,6 +734,7 @@ jobs:
           node deploy/provision/tests/custom-hostname-test.mjs
           node deploy/provision/tests/hostname-cli-test.mjs
           node deploy/oneclick/tests/admin-test.mjs
+          node deploy/oneclick/tests/packs-test.mjs
           node deploy/oneclick/tests/button-test.mjs
           deploy/oneclick/tests/dryrun-test.sh
           node deploy/oneclick-live/tests/live-test.mjs
