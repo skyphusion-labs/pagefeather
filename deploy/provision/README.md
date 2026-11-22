@@ -118,7 +118,15 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   script is missing, or when the bindings cannot be read. It does not snapshot and it does not roll back (that
   is `deploy/wfp/site update`). An approach A site needs `--placement <aws|gcp|azure>:<region>` (or a
   `placementRegion` already on the registry entry) so the upload does not leave placement off.
-  `--placement none` is refused on update. This is not measured on a live site.
+  `--placement none` is refused on update.
+  `compatibility_date` and `compatibility_flags` come from the live script details
+  (`GET /accounts/{account_id}/workers/dispatch/namespaces/{ns}/scripts/{script}`),
+  the fields `result.script.compatibility_date` and `result.script.compatibility_flags`.
+  The registry entry recorded at add does not store them. They are not taken from
+  `WFP_COMPAT` or from a file in the bundle directory. `--compat-date <YYYY-MM-DD>`
+  and `--compat-flags <a,b>` change them on purpose and the command prints the old
+  and new values. A settings read (`GET .../settings`) is not used for this: it can
+  answer an older version (#1063). This is not measured on a live site.
 - `provision.mjs`: `removeNamespaceSite(ctx, opts)` is the ONE removal (#782). The CLI's `remove`, the demo
   reaper (`demo.mjs` `teardownDemoSite`) and the one-click undo (`deploy/oneclick/sites.mjs` `undoStore`, with
   `keepGoing`) all call it, so they cannot drift on what a site is made of.

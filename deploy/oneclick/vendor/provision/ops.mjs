@@ -100,6 +100,28 @@ export async function namespaceScriptBindings(ctx, { ns, name }) {
   return r.result;
 }
 
+// #782: compatibility_date and compatibility_flags of a dispatch-namespace script.
+// Script details (the metadata), not GET .../settings: a settings read can answer
+// an older version (#1063). The registry entry recorded at add does not store
+// these fields.
+// GET /accounts/{account_id}/workers/dispatch/namespaces/{ns}/scripts/{name}
+// https://developers.cloudflare.com/api/resources/workers_for_platforms/subresources/dispatch/subresources/namespaces/subresources/scripts/methods/get/
+// Fields: result.script.compatibility_date and result.script.compatibility_flags.
+// Null when the script is absent (404, or the ghost result.script === null).
+export async function namespaceScriptCompat(ctx, { ns, name }) {
+  const r = await cfFetch(ctx.token, 'GET',
+    `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}`,
+    { fetchImpl: ctx.fetchImpl });
+  if (r.status === 404) return null;
+  if (!r.ok) throw opError('namespaceScriptCompat', name, r);
+  const script = r.result && r.result.script;
+  if (!script || typeof script !== 'object') return null;
+  return {
+    compatibilityDate: script.compatibility_date,
+    compatibilityFlags: script.compatibility_flags,
+  };
+}
+
 // 3. A Worker secret. Namespace script when ns is set, else a standalone Worker.
 // PUT replaces, so it is idempotent.
 export async function putSecret(ctx, { script, ns, name, text }) {

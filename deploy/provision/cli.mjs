@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { provisionSite, removeNamespaceSite, updateNamespaceSite } from './provision.mjs';
 import { SITE_NAME_RE, isCallerReservedName, genSecret } from './shared.mjs';
 import { bDosqlBindings, bDosqlSecrets, bDosqlResourceCreateOps, aBindings, mediaBucketName, ocKvNamespaceName, analyticsDatasetName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs, aCacheInputs, dbQueryTimeoutInputs } from './wp-site-config.mjs';
-import { addCustomHostname, getCustomHostnameStatus, scriptExists, namespaceScriptBindings } from './ops.mjs';
+import { addCustomHostname, getCustomHostnameStatus, scriptExists, namespaceScriptBindings, namespaceScriptCompat } from './ops.mjs';
 import { updateSite, readSite } from './registry.mjs';
 import { PLACEMENT_REGION_RE } from './server-config.mjs';
 
@@ -35,6 +35,33 @@ export { genSecret };
 // the Cloudflare for SaaS create body and the DNS record names, so validate it
 // before any API call (fail early on a typo, keep junk out of the request).
 export const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
+
+// A compatibility date is the YYYY-MM-DD the Workers runtime stores. A rolled
+// date such as 2025-02-31 matches the shape and is still refused.
+const COMPAT_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function assertCompatDate(s) {
+  if (typeof s !== 'string' || !COMPAT_DATE_RE.test(s)) throw new Error('site update: --compat-date must be YYYY-MM-DD');
+  const [y, m, d] = s.split('-').map((n) => Number(n));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) {
+    throw new Error('site update: --compat-date must be YYYY-MM-DD');
+  }
+  return s;
+}
+function assertCompatFlags(s) {
+  if (typeof s !== 'string' || !s.trim()) throw new Error('site update: --compat-flags must be a comma-separated list of flag names');
+  const flags = s.split(',').map((x) => x.trim()).filter((x) => x !== '');
+  if (!flags.length || flags.some((f) => !/^[A-Za-z0-9_]+$/.test(f))) {
+    throw new Error('site update: --compat-flags must be a comma-separated list of flag names');
+  }
+  return flags;
+}
+function compatLine(label, oldValue, newValue, changed) {
+  const oldText = oldValue || '(none)';
+  const newText = newValue || '(none)';
+  if (changed) return `  ${label}: ${oldText} -> ${newText} (${changed})`;
+  return `  ${label}: ${oldText} (from the live script)`;
+}
 
 // The site's own hostname: the site-map key the dispatcher routes and the key a
 // custom hostname is folded onto. ONE helper so `site add` and `site hostname`
@@ -67,15 +94,17 @@ export function parseArgs(argv) {
   const [cmd, ...rest] = argv;
   if (cmd === 'hostname') return parseHostnameArgs(rest);
   if (!['add', 'remove', 'list', 'update'].includes(cmd)) {
-    throw new Error('usage: site add --kind wp|a <name> ... | site list | site remove <name> [--delete-data] [--no-entry] | site update <name> [--placement <aws|gcp|azure>:<region>] | site hostname add <name> --domain <d> --mode delegated|managed [--dcv-delegation] [--cust-zone <id>] | site hostname status <name>');
+    throw new Error('usage: site add --kind wp|a <name> ... | site list | site remove <name> [--delete-data] [--no-entry] | site update <name> [--placement <aws|gcp|azure>:<region>] [--compat-date <YYYY-MM-DD>] [--compat-flags <a,b>] | site hostname add <name> --domain <d> --mode delegated|managed [--dcv-delegation] [--cust-zone <id>] | site hostname status <name>');
   }
-  let kind, name, hyperdrive, hyperdriveSqlMode, placement, deleteData = false, noEntry = false;
+  let kind, name, hyperdrive, hyperdriveSqlMode, placement, deleteData = false, noEntry = false, compatDate, compatFlags;
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === '--kind') kind = rest[++i];
     else if (a === '--hyperdrive') hyperdrive = rest[++i];
     else if (a === '--hyperdrive-sql-mode') hyperdriveSqlMode = rest[++i];
     else if (a === '--placement') placement = rest[++i];
+    else if (cmd === 'update' && a === '--compat-date') compatDate = rest[++i];
+    else if (cmd === 'update' && a === '--compat-flags') compatFlags = rest[++i];
     else if (cmd === 'remove' && a === '--delete-data') deleteData = true;
     else if (cmd === 'remove' && a === '--no-entry') noEntry = true;
     else if (!a.startsWith('--')) name = a;
@@ -107,7 +136,9 @@ export function parseArgs(argv) {
     if (placement !== undefined && placement !== 'none' && !PLACEMENT_REGION_RE.test(placement)) {
       throw new Error('--placement must be <aws|gcp|azure>:<region> (for example azure:westus2)');
     }
-    return { cmd, name, placement };
+    if (compatDate !== undefined) compatDate = assertCompatDate(compatDate);
+    if (compatFlags !== undefined) compatFlags = assertCompatFlags(compatFlags);
+    return { cmd, name, placement, compatDate, compatFlags };
   }
   return { cmd, kind, name, hyperdrive, hyperdriveSqlMode, placement };
 }
@@ -435,10 +466,14 @@ export async function removeCommand(ctx, parsed, env, { out = console.log } = {}
   return { ...r, checked: true };
 }
 
-// site update <name> [--placement <region>] (#782): re-upload the user Worker from
-// the bundle on disk. The live bindings are read back and re-sent. Secrets are not
-// re-sent; keep_bindings secret_text keeps them. No migrations block, so the
-// Durable Object data stays. The live script must already exist.
+// site update <name> [--placement <region>] [--compat-date <YYYY-MM-DD>]
+// [--compat-flags <a,b>] (#782): re-upload the user Worker from the bundle on
+// disk. The live bindings are read back and re-sent. Secrets are not re-sent;
+// keep_bindings secret_text keeps them. No migrations block, so the Durable
+// Object data stays. The live script must already exist.
+// compatibility_date and compatibility_flags come from the live script details
+// (namespaceScriptCompat). They are not taken from WFP_COMPAT or from a file in
+// the bundle directory. --compat-date and --compat-flags change them on purpose.
 export async function updateCommand(ctx, parsed, env, { out = console.log } = {}) {
   if (!env.WFP_KV_ID || !env.WFP_NAMESPACE) throw new Error('site update: set WFP_KV_ID and WFP_NAMESPACE');
   const hostname = siteHostname(parsed.name, env);
@@ -480,18 +515,41 @@ export async function updateCommand(ctx, parsed, env, { out = console.log } = {}
   if (!live) {
     throw new Error(`site update: the bindings of ${script} could not be read. Nothing was uploaded.`);
   }
+  let compat;
+  try { compat = await namespaceScriptCompat(ctx, { ns, name: script }); }
+  catch (e) {
+    const status = e && e.status ? ` (HTTP ${e.status})` : '';
+    throw new Error(`site update: the compatibility date and flags of ${script} could not be read${status}. Nothing was uploaded.`);
+  }
+  if (!compat || typeof compat.compatibilityDate !== 'string' || !COMPAT_DATE_RE.test(compat.compatibilityDate)) {
+    throw new Error(`site update: the compatibility_date of ${script} could not be read. Nothing was uploaded.`);
+  }
+  const liveFlags = compat.compatibilityFlags;
+  if (!Array.isArray(liveFlags) || liveFlags.some((f) => typeof f !== 'string' || f === '')) {
+    throw new Error(`site update: the compatibility_flags of ${script} could not be read. Nothing was uploaded.`);
+  }
+  // The calendar check matches --compat-date. A live value that is only the
+  // right shape but not a real date is refused, the same as a missing one.
+  let liveDate;
+  try { liveDate = assertCompatDate(compat.compatibilityDate); }
+  catch {
+    throw new Error(`site update: the compatibility_date of ${script} could not be read. Nothing was uploaded.`);
+  }
+  const compatibilityDate = parsed.compatDate !== undefined ? parsed.compatDate : liveDate;
+  const compatibilityFlags = parsed.compatFlags !== undefined ? parsed.compatFlags : liveFlags.slice();
   const dir = kind === 'wp' ? env.BDOSQL_BUNDLE_DIR : env.A_BUNDLE_DIR;
   const mainModule = kind === 'wp' ? (env.WP_MAIN || 'index.js') : (env.A_MAIN || 'index-a-lean.js');
   const modules = await loadModules(dir);
   const r = await updateNamespaceSite(ctx, {
     ns, name: parsed.name, mainModule, modules,
-    compatibilityDate: env.WFP_COMPAT || '2026-07-01',
-    compatibilityFlags: ['nodejs_compat', 'enable_request_signal'],
+    compatibilityDate, compatibilityFlags,
     liveBindings: live, placement,
   });
   out(`site update ${parsed.name} (${hostname}): uploaded ${r.script}`);
   out(`  kept bindings: ${r.bindings.map((b) => b.name).join(' ')}`);
   out(`  kept secrets: ${r.secrets.join(' ')} (names only; the values were not sent)`);
+  out(compatLine('compatibility_date', liveDate, compatibilityDate, parsed.compatDate !== undefined ? '--compat-date' : ''));
+  out(compatLine('compatibility_flags', liveFlags.join(' '), compatibilityFlags.join(' '), parsed.compatFlags !== undefined ? '--compat-flags' : ''));
   return r;
 }
 

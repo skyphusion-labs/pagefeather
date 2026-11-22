@@ -39,11 +39,21 @@ function bundleDir() {
   return dir;
 }
 
+// The live script details (GET the namespace script) carry a compatibility date and
+// flag list that are not WFP_COMPAT and not the bundle's wrangler.toml.
+const LIVE_DATE = '2024-03-01';
+const LIVE_FLAGS = ['nodejs_compat'];
+const DISK_DATE = '2025-01-15';
+const DEFAULT_SCRIPT = { script: { id: 'site-acme', compatibility_date: LIVE_DATE, compatibility_flags: LIVE_FLAGS } };
+
 // A stand-in that keeps the entry and the script until a DELETE, and records every call.
-function account({ entry = ENTRY, script = true, bindings = LIVE, bindingsStatus = 200 } = {}) {
+// The first GET of the script is the existence check. A later GET is the compatibility
+// read (script details). compatStatus, when not 200, fails that later GET only.
+function account({ entry = ENTRY, script = true, bindings = LIVE, bindingsStatus = 200, scriptResult = null, compatStatus = 200 } = {}) {
   const st = { entry: entry ? JSON.stringify(entry) : null, script };
   const calls = [];
   let uploaded = null;
+  let scriptGets = 0;
   const fetchImpl = async (url, init) => {
     const p = url.split('/client/v4')[1];
     const m = init.method;
@@ -57,7 +67,12 @@ function account({ entry = ENTRY, script = true, bindings = LIVE, bindingsStatus
       return okJ(bindings);
     }
     if (/\/dispatch\/namespaces\/NS\/scripts\/site-acme$/.test(p)) {
-      if (m === 'GET') return st.script ? okJ({ script: { id: 'site-acme' } }) : res(404, { success: false, errors: [{ code: 10007, message: 'not found' }] });
+      if (m === 'GET') {
+        if (!st.script) return res(404, { success: false, errors: [{ code: 10007, message: 'not found' }] });
+        scriptGets++;
+        if (scriptGets > 1 && compatStatus !== 200) return res(compatStatus, { success: false, errors: [{ code: 10000, message: 'compat stand-in failure' }] });
+        return okJ(scriptResult || DEFAULT_SCRIPT);
+      }
       if (m === 'PUT') {
         uploaded = init.body;
         return okJ({ id: 'site-acme' });
@@ -272,6 +287,126 @@ const at = (calls, s) => calls.findIndex((c) => c.startsWith(s));
     'DELETE /accounts/ACCT/storage/kv/namespaces/MAP/values/acme.example',
   ];
   ok('undoStore: the same API calls as before', threw === null && calls.join('\n') === want.join('\n'));
+}
+
+// 9. compatibility_date and compatibility_flags come from the live script details,
+//    not from WFP_COMPAT and not from a wrangler.toml in the bundle directory.
+//    --compat-date and --compat-flags change them on purpose and print old and new.
+function compatBundle() {
+  const dir = bundleDir();
+  writeFileSync(join(dir, 'wrangler.toml'), `compatibility_date = "${DISK_DATE}"\ncompatibility_flags = ["nodejs_compat", "enable_request_signal"]\n`);
+  writeFileSync(join(dir, 'index-a-lean.js'), 'export default { fetch() { return new Response("a"); } }\n');
+  return dir;
+}
+async function metaOf(uploaded) {
+  const body = uploaded();
+  if (!body || typeof body.get !== 'function') return null;
+  return JSON.parse(await body.get('metadata').text());
+}
+{
+  const dir = compatBundle();
+  const A = account();
+  const lines = [];
+  let threw = null;
+  try {
+    await updateCommand(A.ctx, parseArgs(['update', 'acme']), { ...ENV, BDOSQL_BUNDLE_DIR: dir }, { out: (x) => lines.push(String(x)) });
+  } catch (e) { threw = e; }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+  const meta = await metaOf(A.uploaded);
+  const txt = lines.join('\n');
+  ok('update: compatibility_date and compatibility_flags come from the live script, not from WFP_COMPAT or the bundle',
+    threw === null && meta && meta.compatibility_date === LIVE_DATE && JSON.stringify(meta.compatibility_flags) === JSON.stringify(LIVE_FLAGS)
+    && meta.compatibility_date !== ENV.WFP_COMPAT && meta.compatibility_date !== DISK_DATE
+    && !JSON.stringify(meta.compatibility_flags).includes('enable_request_signal'));
+  ok('update: the output names the live script as the source',
+    threw === null && txt.includes(`compatibility_date: ${LIVE_DATE} (from the live script)`)
+    && txt.includes('compatibility_flags: nodejs_compat (from the live script)')
+    && !txt.includes(ENV.WFP_COMPAT) && !txt.includes(DISK_DATE) && !txt.includes('->'));
+}
+{
+  const dir = compatBundle();
+  const A = account();
+  const lines = [];
+  let threw = null;
+  try {
+    await updateCommand(A.ctx, parseArgs(['update', 'acme', '--compat-date', '2025-11-02']), { ...ENV, BDOSQL_BUNDLE_DIR: dir }, { out: (x) => lines.push(String(x)) });
+  } catch (e) { threw = e; }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+  const meta = await metaOf(A.uploaded);
+  const txt = lines.join('\n');
+  ok('update: --compat-date changes the date and prints the old and new values',
+    threw === null && meta && meta.compatibility_date === '2025-11-02' && JSON.stringify(meta.compatibility_flags) === JSON.stringify(LIVE_FLAGS)
+    && txt.includes(`compatibility_date: ${LIVE_DATE} -> 2025-11-02 (--compat-date)`)
+    && txt.includes('compatibility_flags: nodejs_compat (from the live script)'));
+}
+{
+  const dir = compatBundle();
+  const A = account();
+  const lines = [];
+  let threw = null;
+  try {
+    await updateCommand(A.ctx, parseArgs(['update', 'acme', '--compat-flags', 'nodejs_compat,enable_request_signal']), { ...ENV, BDOSQL_BUNDLE_DIR: dir }, { out: (x) => lines.push(String(x)) });
+  } catch (e) { threw = e; }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+  const meta = await metaOf(A.uploaded);
+  const txt = lines.join('\n');
+  ok('update: --compat-flags changes the flags and prints the old and new values',
+    threw === null && meta && meta.compatibility_date === LIVE_DATE
+    && JSON.stringify(meta.compatibility_flags) === JSON.stringify(['nodejs_compat', 'enable_request_signal'])
+    && txt.includes('compatibility_flags: nodejs_compat -> nodejs_compat enable_request_signal (--compat-flags)')
+    && txt.includes(`compatibility_date: ${LIVE_DATE} (from the live script)`));
+}
+{
+  const dir = compatBundle();
+  const A = account({ entry: { script: 'site-acme', kind: 'a', placementRegion: 'azure:westus2' } });
+  const lines = [];
+  let threw = null;
+  try {
+    await updateCommand(A.ctx, parseArgs(['update', 'acme']), { ...ENV, A_BUNDLE_DIR: dir }, { out: (x) => lines.push(String(x)) });
+  } catch (e) { threw = e; }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+  const meta = await metaOf(A.uploaded);
+  ok('update kind a: compatibility_date and compatibility_flags come from the live script',
+    threw === null && meta && meta.compatibility_date === LIVE_DATE && JSON.stringify(meta.compatibility_flags) === JSON.stringify(LIVE_FLAGS));
+}
+{
+  const dir = compatBundle();
+  const A = account({ scriptResult: { script: { id: 'site-acme', compatibility_flags: LIVE_FLAGS } } });
+  let threw = null;
+  try { await updateCommand(A.ctx, parseArgs(['update', 'acme']), { ...ENV, BDOSQL_BUNDLE_DIR: dir }, { out: () => {} }); }
+  catch (e) { threw = e; }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+  ok('update: a missing compatibility_date is refused before any upload',
+    threw !== null && /compatibility_date/.test(threw ? threw.message : '') && /Nothing was uploaded/.test(threw.message) && !A.calls.some((c) => c.startsWith('PUT')));
+}
+{
+  const dir = compatBundle();
+  const A = account({ scriptResult: { script: { id: 'site-acme', compatibility_date: LIVE_DATE } } });
+  let threw = null;
+  try { await updateCommand(A.ctx, parseArgs(['update', 'acme']), { ...ENV, BDOSQL_BUNDLE_DIR: dir }, { out: () => {} }); }
+  catch (e) { threw = e; }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+  ok('update: missing compatibility_flags are refused before any upload',
+    threw !== null && /compatibility_flags/.test(threw ? threw.message : '') && /Nothing was uploaded/.test(threw.message) && !A.calls.some((c) => c.startsWith('PUT')));
+}
+{
+  const dir = compatBundle();
+  const A = account({ compatStatus: 500 });
+  let threw = null;
+  try { await updateCommand(A.ctx, parseArgs(['update', 'acme']), { ...ENV, BDOSQL_BUNDLE_DIR: dir }, { out: () => {} }); }
+  catch (e) { threw = e; }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+  ok('update: compatibility details that cannot be read are refused before any upload',
+    threw !== null && /compatibility/.test(threw ? threw.message : '') && /Nothing was uploaded/.test(threw.message) && !A.calls.some((c) => c.startsWith('PUT')));
+}
+{
+  let bad = null, good = null;
+  try { parseArgs(['update', 'acme', '--compat-date', '2025-02-31']); }
+  catch (e) { bad = e; }
+  try { good = parseArgs(['update', 'acme', '--compat-date', '2025-11-02']); }
+  catch (e) { good = e; }
+  ok('update: --compat-date must be YYYY-MM-DD',
+    bad !== null && /YYYY-MM-DD/.test(bad.message) && good && good.compatDate === '2025-11-02' && !(good instanceof Error));
 }
 
 console.log(fails + ' failing');
