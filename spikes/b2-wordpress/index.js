@@ -3436,15 +3436,6 @@ export class PhpRuntime extends DurableObject {
 	}
 
 	async alarm() {
-		// #837: the purge object runs only the purge block. No cron leg, no re-arm of the cron cadence.
-		if (await this.ctx.storage.get(PURGE_ONLY_KEY)) {
-			try {
-				await this.sendDuePurge();
-			} catch (e) {
-				console.log(JSON.stringify({ m: 'alarm', purgeOnlyError: String((e && e.message) || e).slice(0, 200) }));
-			}
-			return;
-		}
 		// #1186: on a cron-off approach A build this object has no alarm work (the Cron Trigger is cleared too, #1192):
 		// the alarm deletes itself and does not re-arm, so due work never runs a leg here. Logged, so the opt-out shows.
 		if (aCronObjectOff(this.env)) {
@@ -3455,6 +3446,13 @@ export class PhpRuntime extends DurableObject {
 		// #1152: the build this alarm runs on, from this code's own BUILD_ID, before anything else (an abort below included):
 		// /_cron-build reports it, so a readback is ok only once an alarm has run the deployed code.
 		await this.ctx.storage.put(CRON_ALARM_BUILD_KEY, { build: BUILD_ID, at: Date.now() });
+		// #837: the purge object runs only the purge block. No cron leg, no re-arm of the cron cadence. After the #1186
+		// cron-off opt-out and the #1152 build record (cron-version.test.mjs), before armBeforeRun (alarm-arm.test.mjs).
+		// No error leaves alarm() (#291); a .catch, not a try, so alarm-arm.test.mjs's source order holds.
+		if (await this.ctx.storage.get(PURGE_ONLY_KEY)) {
+			await this.sendDuePurge().catch((e) => console.log(JSON.stringify({ m: 'alarm', purgeOnlyError: String((e && e.message) || e).slice(0, 200) })));
+			return;
+		}
 		// The next tick is armed FIRST (#291, alarm-arm.mjs armBeforeRun): a run killed below (an
 		// isolate reset) still leaves a future alarm. A purge retry sets a sooner one, which replaces it.
 		this.tickAt = await armBeforeRun(this.ctx.storage, Date.now(), Number((this.env && this.env.CRON_INTERVAL_MS) || 60000));

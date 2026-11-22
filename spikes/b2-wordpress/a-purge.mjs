@@ -5,14 +5,14 @@
 // so guest copies could stay old for up to their TTL.
 //
 // Now a refused purge is never lost. Two routes (aPurgeRoute):
-// - 'object': the Worker has the PHP_RUNTIME binding. The gateway hands each ask to the site's PURGE object (the
+// - 'object': the Worker has A_CRON=on and the PHP_RUNTIME binding (a cron-off build deletes every PhpRuntime alarm, #1186). The gateway hands each ask to the site's PURGE object (the
 //   PhpRuntime named PURGE_OBJECT_NAME) with requestPurge({ purgeOnly: true }). That is the #699 path b-dosql uses: the
 //   object coalesces the whole site's asks into one send per PURGE_GAP_MS, keeps a refused purge pending in its
 //   storage, retries it on its alarm with the back-off (12, 24, 48 s), asks the account purge budget when one is
 //   bound (fail-open), and calls the site's own Pages.purge (a Worker purges only its own cache; the object runs in
 //   the site's own script). It is NOT the cron object: its alarm sends purges and nothing else, so a write never
 //   starts WP-Cron (a-cron-e2e.sh CONTROL). A hand-off that fails falls back to the local route.
-// - 'local': no PHP_RUNTIME binding. The isolate keeps the same purge-state.mjs state in memory and retries inside the
+// - 'local': A_CRON off or no PHP_RUNTIME binding. The isolate keeps the same purge-state.mjs state in memory and retries inside the
 //   request's waitUntil, for at most WAITUNTIL_BUDGET_MS. A purge still refused then stays pending, logged as
 //   purge-pending, and the isolate's next request sends it (kick). Limit: an isolate evicted while a purge is pending
 //   loses it; the copy then ages out within purgeWindowMs, as before.
@@ -36,8 +36,9 @@ function approachA(env) {
 	return !!env && env.PHP_IN_DO !== 'on' && env.DB_IN_DO !== 'on';
 }
 
+// A_CRON=on is required: on a cron-off build every PhpRuntime alarm deletes itself (#1186), the purge object's too.
 export function aPurgeRoute(env) {
-	return env && env.PHP_RUNTIME && approachA(env) ? 'object' : 'local';
+	return env && env.A_CRON === 'on' && env.PHP_RUNTIME && approachA(env) ? 'object' : 'local';
 }
 
 export function createGatewayPurger({ now = () => Date.now(), sleep = (ms) => new Promise((ok) => setTimeout(ok, ms)), log = (o) => console.log(JSON.stringify(o)), dispose = () => {}, env = null } = {}) {

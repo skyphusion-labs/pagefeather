@@ -83,12 +83,12 @@ function ctxFor(w, b, extra = {}) {
 	return { pend, waitUntil: (p) => pend.push(p), purge: async () => b.take(), ...extra };
 }
 
-test('the route: the site purge object when the Worker has PHP_RUNTIME, else this isolate', () => {
-	assert.equal(aPurgeRoute({ PHP_RUNTIME: {} }), 'object');
+test('the route: the site purge object when the Worker has A_CRON=on and PHP_RUNTIME, else this isolate', () => {
 	assert.equal(aPurgeRoute({ A_CRON: 'on', PHP_RUNTIME: {} }), 'object');
+	assert.equal(aPurgeRoute({ PHP_RUNTIME: {} }), 'local', 'A_CRON off: a cron-off build deletes every PhpRuntime alarm (#1186)');
 	assert.equal(aPurgeRoute({ A_CRON: 'on' }), 'local', 'no PHP_RUNTIME binding: no object');
 	assert.equal(aPurgeRoute({}), 'local');
-	assert.equal(aPurgeRoute({ PHP_RUNTIME: {}, PHP_IN_DO: 'on' }), 'local', 'b-dosql never routes here');
+	assert.equal(aPurgeRoute({ A_CRON: 'on', PHP_RUNTIME: {}, PHP_IN_DO: 'on' }), 'local', 'b-dosql never routes here');
 	assert.notEqual(PURGE_OBJECT_NAME, CRON_OBJECT_NAME, 'never the cron object: a write must not start WP-Cron');
 });
 
@@ -102,13 +102,15 @@ test('index.js wiring: the hand-off asks the purge object purge-only, and its al
 	const off = src.indexOf('if (aCronObjectOff(this.env)) {', alarm);
 	const arm = src.indexOf('armBeforeRun(this.ctx.storage', alarm);
 	assert.ok(alarm > 0 && only > alarm, 'the purge-only branch is in alarm()');
-	assert.ok(only < off && only < arm, 'and comes before the cron-off delete and the cron re-arm');
+	const rec = src.indexOf('await this.ctx.storage.put(CRON_ALARM_BUILD_KEY', alarm);
+	assert.ok(off < only && rec < only, 'after the #1186 cron-off opt-out and the #1152 build record');
+	assert.ok(only < arm, 'and before the cron re-arm (armBeforeRun)');
 	const branch = src.slice(only, src.indexOf('\n\t\t}\n', only));
-	assert.match(branch, /await this\.sendDuePurge\(\);/);
+	assert.match(branch, /await this\.sendDuePurge\(\)/);
 	assert.match(branch, /return;/);
 	assert.doesNotMatch(branch, /alarmRun|armBeforeRun|rearm\(/, 'no cron leg and no cron cadence in the purge-only alarm');
 	assert.match(src, /async requestPurge\(opts\) \{[\s\S]{0,400}opts\.purgeOnly\) await this\.ctx\.storage\.put\(PURGE_ONLY_KEY, 1\)/, 'requestPurge marks the purge object');
-	assert.equal((src.match(/await this\.sendDuePurge\(\);/g) || []).length, 2, 'one purge block, called by the cron alarm and the purge-only alarm');
+	assert.equal((src.match(/await this\.sendDuePurge\(\)/g) || []).length, 2, 'one purge block, called by the cron alarm and the purge-only alarm');
 });
 
 test('local: a 1134 refusal is retried after one bucket refill, inside the same waitUntil, never dropped', async () => {
@@ -184,7 +186,7 @@ test('object route: each ask is handed to the site purge object, never purged he
 	const w = world();
 	const b = bucket(w);
 	let handed = 0;
-	const p = createGatewayPurger({ now: w.now, sleep: w.sleep, log: w.log, env: { PHP_RUNTIME: {} } });
+	const p = createGatewayPurger({ now: w.now, sleep: w.sleep, log: w.log, env: { A_CRON: 'on', PHP_RUNTIME: {} } });
 	for (let i = 0; i < 3; i++) p.ask(ctxFor(w, b, { handOff: async () => (handed++, 'scheduled') }));
 	await w.run(w.now() + 60000);
 	assert.equal(handed, 3);
@@ -195,7 +197,7 @@ test('object route: each ask is handed to the site purge object, never purged he
 test('object route: a hand-off that fails falls back to this isolate, so the purge is still sent', async () => {
 	const w = world();
 	const b = bucket(w);
-	const p = createGatewayPurger({ now: w.now, sleep: w.sleep, log: w.log, env: { PHP_RUNTIME: {} } });
+	const p = createGatewayPurger({ now: w.now, sleep: w.sleep, log: w.log, env: { A_CRON: 'on', PHP_RUNTIME: {} } });
 	p.ask(ctxFor(w, b, { handOff: async () => { throw new Error('object unreachable'); } }));
 	await w.run(w.now() + 60000);
 	assert.equal(b.sends.length, 1);
@@ -249,7 +251,7 @@ test('the stated limit: under a neighbour draining the bucket, no write waits lo
 	const w = world();
 	const b = bucket(w);
 	const obj = modelCronObject(w, b);
-	const p = createGatewayPurger({ now: w.now, sleep: w.sleep, log: w.log, env: { PHP_RUNTIME: {} } });
+	const p = createGatewayPurger({ now: w.now, sleep: w.sleep, log: w.log, env: { A_CRON: 'on', PHP_RUNTIME: {} } });
 	const writes = [];
 	const t0 = w.now();
 	let rnd = 7;
