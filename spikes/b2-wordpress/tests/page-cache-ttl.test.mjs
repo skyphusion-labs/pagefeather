@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
+import { isPlacedRender, sealPlacedCache, placedRenderRequest, PLACED_CDN_CC_HEADER } from '../pages-render.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from '../page-cache-ttl.mjs';
 import { storeRequestSide } from '../page-copy.mjs';
 
@@ -58,8 +59,8 @@ test('#766: an answer made while any SQL statement failed is never stored at the
 	const start = src.indexOf('function pageCacheHeaders(');
 	const fn = src.slice(start, src.indexOf('\n}\n', start) + 2);
 	// #1328: the request conditions live in page-copy.mjs; the real storeRequestSide is passed in.
-	const pageCacheHeaders = new Function('PRODUCT_PAGE_HEADER', 'productTtl', 'isProductPage', 'edgeCacheControl', 'storeRequestSide',
-		fn + '\nreturn pageCacheHeaders;')(PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl, storeRequestSide);
+	const pageCacheHeaders = new Function('PRODUCT_PAGE_HEADER', 'productTtl', 'isProductPage', 'edgeCacheControl', 'storeRequestSide', 'isPlacedRender', 'sealPlacedCache',
+		fn + '\nreturn pageCacheHeaders;')(PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl, storeRequestSide, isPlacedRender, sealPlacedCache);
 	const run = (failed) => {
 		const out = new Headers();
 		const req = new Request('https://shop.example/?product=mug');
@@ -72,13 +73,37 @@ test('#766: an answer made while any SQL statement failed is never stored at the
 	assert.match(src, /pageCacheHeaders\(req, url, r, out, env, d\.failures\.length\);/, 'index.js passes the request failures');
 });
 
+test('#1328: a placed guest render through pageCacheHeaders leaves the gateway no-store, its directive private', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const start = src.indexOf('function pageCacheHeaders(');
+	const fn = src.slice(start, src.indexOf('\n}\n', start) + 2);
+	const consts = ['WP_COOKIE', 'PAGE_CACHE_NO_PATH', 'PAGE_CACHE_NO_PARAM'].map((n) => src.match(new RegExp('^const ' + n + ' = [^\\n]*;$', 'm'))[0]).join('\n');
+	const pageCacheHeaders = new Function('PRODUCT_PAGE_HEADER', 'productTtl', 'isProductPage', 'edgeCacheControl', 'isPlacedRender', 'sealPlacedCache',
+		consts + '\n' + fn + '\nreturn pageCacheHeaders;')(PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl, isPlacedRender, sealPlacedCache);
+	const run = (req) => {
+		const out = new Headers();
+		pageCacheHeaders(req, new URL(req.url), { httpStatusCode: 200, headers: {} }, out, {}, 0);
+		return out;
+	};
+	const direct = run(new Request('https://shop.example/classic-cart/'));
+	assert.match(direct.get('cloudflare-cdn-cache-control'), /^max-age=120, /, 'control: a guest render in Pages (b-dosql) is stored, as before');
+	assert.equal(direct.get('cache-tag'), 'wp-pages');
+	const placed = run(placedRenderRequest(new Request('https://shop.example/classic-cart/')));
+	assert.equal(placed.get('cloudflare-cdn-cache-control'), 'no-store', 'the gateway answer is never storable');
+	assert.equal(placed.get('cache-tag'), null);
+	assert.match(placed.get(PLACED_CDN_CC_HEADER), /^max-age=120, /, 'the directive travels to Pages');
+	const cart = run(placedRenderRequest(new Request('https://shop.example/classic-cart/', { headers: { cookie: 'woocommerce_items_in_cart=1; wp_woocommerce_session_a=b' } })));
+	assert.equal(cart.get('cloudflare-cdn-cache-control'), 'no-store', 'with cart cookies: never stored');
+	assert.equal(cart.get(PLACED_CDN_CC_HEADER), null, 'and nothing for Pages to restore');
+});
+
 test('#759: a WordPress no-cache private answer gets no-store on the browser header', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	const start = src.indexOf('function pageCacheHeaders(');
 	const fn = src.slice(start, src.indexOf('\n}\n', start) + 2);
 	// #1328: the request conditions live in page-copy.mjs; the real storeRequestSide is passed in.
-	const pageCacheHeaders = new Function('PRODUCT_PAGE_HEADER', 'productTtl', 'isProductPage', 'edgeCacheControl', 'storeRequestSide',
-		fn + '\nreturn pageCacheHeaders;')(PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl, storeRequestSide);
+	const pageCacheHeaders = new Function('PRODUCT_PAGE_HEADER', 'productTtl', 'isProductPage', 'edgeCacheControl', 'storeRequestSide', 'isPlacedRender', 'sealPlacedCache',
+		fn + '\nreturn pageCacheHeaders;')(PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl, storeRequestSide, isPlacedRender, sealPlacedCache);
 	const wpCc = 'no-cache, must-revalidate, max-age=0, private';
 	const out = new Headers({ 'cache-control': wpCc });
 	const req = new Request('https://shop.example/wp-admin/', { headers: { cookie: 'wordpress_logged_in=1' } });
