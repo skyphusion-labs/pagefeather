@@ -564,7 +564,26 @@ def main():
             m = re.search(r'PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = "([^"]+)"', txt)
             ok("config %s: upstream global-setup is an absolute suite path" % sn) if m and m.group(1).endswith(want_upstream_suffix) and os.path.isabs(m.group(1)) else bad("config %s: upstream env missing or relative" % sn)
             if sn == "wp":
-                ok("config %s has no title grepInvert" % sn) if "grepInvert" not in txt else bad("config %s gained a title grepInvert" % sn)
+                # #1335: one Quick Draft test, not the whole dashboard file.
+                dash = "specs/dashboard.test.js"
+                dash_title = "Quick Draft > should allow Quick Draft to be created with only the Content"
+                rows = [r for r in runner.read_excludes("wp") if r.path == dash]
+                ok("wp excludes one dashboard test, not the file") if len(rows) == 1 and rows[0].kind == "title" and rows[0].title == dash_title else bad("dashboard exclude: %s" % (rows,))
+                ok("wp dashboard reason names #1335") if rows and "#1335" in rows[0].reason and "2.1" in rows[0].reason else bad("dashboard reason: %s" % (rows,))
+                try:
+                    ign = json.loads(txt.split("const ignore = ", 1)[1].split(";", 1)[0])
+                except (ValueError, IndexError):
+                    ign = None
+                ok("wp testIgnore does not drop dashboard.test.js") if ign is not None and dash not in ign else bad("dashboard still file-ignored: %s" % ign)
+                src = runner.title_grep_source(dash, dash_title)
+                ok("wp config grepInvert carries the content-only Quick Draft") if json.dumps(src) in txt else bad("wp config lacks the dashboard title grep")
+                rx = re.compile(src)
+                content_line = dash + " Quick Draft should allow Quick Draft to be created with only the Content"
+                title_line = dash + " Quick Draft should allow Quick Draft to be created with only the Title"
+                both_line = dash + " Quick Draft should allow Quick Draft to be created with Title and Content"
+                ok("the title grep hits the content-only test") if rx.search(content_line) else bad("content-only line missed: %s" % content_line)
+                ok("the title grep keeps the title-only test") if not rx.search(title_line) else bad("title-only line hit")
+                ok("the title grep keeps the title-and-content test") if not rx.search(both_line) else bad("title-and-content line hit")
         conn = [r for r in runner.read_excludes("gb") if r.path == "specs/admin/connectors.spec.js"]
         want_why = "code lock denies install_plugins, so connector install stays off"
         ok("gb excludes connectors.spec.js for the code lock") if len(conn) == 1 and conn[0].kind == "file" and conn[0].reason == want_why else bad("connectors row: %s" % (conn,))
