@@ -6,13 +6,17 @@ This page lists what does not work yet, or works only with care, so you can plan
 
 The rows are in [results.md](results.md), 2026-11-20 and 2026-11-21. The support matrix summary has the per-tier counts.
 
-### WooCommerce checkout on Hyperdrive is slow (#1218)
+### WooCommerce checkout on Hyperdrive is slow (#1218, #1210)
 
-On `cf759hl` at main `822ab24`, 6 of 10 blocks checkout tests miss the suite's 10 s thank-you wait (#1210). The order POST takes 9.3 to 11.8 s. The order is placed, and the page then answers 200. A query trace of one guest order shows 404 per-order transient DELETEs, 4.8 s of database time. #1206 added that cost. PR #1219 is open. The results row says that, locally, 364 transient DELETE statements per order become 1. The fix is in progress, not fixed.
+On `cf759hl` at main `822ab24`, 6 of 10 blocks checkout tests missed the suite's 10 s thank-you wait (#1210). The order POST took 9.3 to 11.8 s. The order was placed, and the page then answered 200. A query trace of one guest order showed 404 per-order transient DELETEs, 4.8 s of database time. #1206 added that cost.
 
-### Order emails on Hyperdrive can be late (#1215)
+PR #1219 fixed that part (#1218, merged 2026-11-21): the engine sends a request's transient deletes as one statement at its end. On one counted order, 352 DELETE statements became 11 (row "#1219 counted probe"). On PR #1219's head, before the merge, 10 of 10 blocks checkout tests passed, and the order POST took 4.8 to 6.8 s (row "wc arm B 3"). The time that is left is database time, about 13 ms a query. That is still a slow checkout, and #1210 is closed. No full wc suite has run since the merge.
 
-#1215 is open. WooCommerce queues each order email. The approach A cron alarm ran those actions 12 to 122 s later, on `cf759hl` at main `822ab24` (row "wc email wait"). The suite polls for 30 s. A default deploy runs the queue (#1166). On this row the send can miss that poll, because the fixture deletes the order first. This row is from before #1176 merged. A second miss on that run is the harness (#1216). PR #1217 is open.
+### Order emails on Hyperdrive were late (#1215, fixed)
+
+WooCommerce queues each order email. The approach A cron alarm ran those actions 12 to 122 s later, on `cf759hl` at main `822ab24` (row "wc email wait"). The suite polls for 30 s, so a send could miss that poll. A second miss on that run was the harness (#1216; PR #1217 fixed it, merged 2026-11-21).
+
+PR #1224 fixed the delay (#1215, merged 2026-11-21): a queued email wakes the cron within seconds. On its head, before the merge, all 13 email actions ran 2 to 11 s after queueing, and order-emails passed 6 of 6 (row "wc arm B 4"). The 8 failures on that run are email-editor latency (#1078), not the queue. No full wc suite has run since the merge.
 
 ### The WooCommerce "development version" admin notice (#1221)
 
@@ -66,7 +70,7 @@ Under the `CRON_SIMULATE_COLD=1` test seam (a forced cold wake on every alarm), 
 
 ### Deactivating WooCommerce can return 500 on a warm isolate (#219)
 
-Deactivating WooCommerce in wp-admin, on an isolate that WooCommerce already warmed, can return 500. The cause is the 128 MiB isolate cap. A skip of WooCommerce, as the media-upload path uses, cannot apply, because the request is about WooCommerce itself. The lever is memory headroom, mainly lazy MEMFS nodes (`LAZY_NODES=on`, #218). The store Container (approach C) was retired (#214), so it is not the fix here. That is separate from the open question of where wp-admin runs (Workers or a Container), which is decided after the new engine is fully tested.
+Deactivating WooCommerce in wp-admin, on a `b-dosql` isolate that WooCommerce already warmed, can return 500. The cause is the 128 MB isolate cap, and here it is not the WebAssembly heap: on that isolate the heap was at 99 MiB, and the overflow is the JavaScript heap, which `x-wasm-mib` does not show (#219, 2026-11-09). #219 is closed as not planned; this section is its record. A skip of WooCommerce, as the media-upload path uses, cannot apply, because the request is about WooCommerce itself. The lever is memory headroom, mainly lazy MEMFS nodes (`LAZY_NODES=on`, #218). The store Container (approach C) was retired (#214), so it is not the fix here. That is separate from the open question of where wp-admin runs (Workers or a Container), which is decided after the new engine is fully tested.
 
 ## The guest page cache
 
