@@ -55,13 +55,15 @@ page tells you which is which.
   users, Cloudflare started up to 118 isolates (row `A vs b-dosql (concurrency)`, 2026-11-09). You
   need an external MySQL server. A first request on a cold isolate is slow: it costs 3 to 9 s more
   at the client
-  ([#1169](https://github.com/skyphusion-labs/pagefeather/issues/1169)). Blocks checkout is slow
-  because one order deletes its transients one by one
-  ([#1218](https://github.com/skyphusion-labs/pagefeather/issues/1218)).
-  [PR #1219](https://github.com/skyphusion-labs/pagefeather/pull/1219) is open, so that fix is in
-  progress, not fixed. Order emails can be late
-  ([#1215](https://github.com/skyphusion-labs/pagefeather/issues/1215), open).
-  [PR #1224](https://github.com/skyphusion-labs/pagefeather/pull/1224) is open. The WooCommerce
+  ([#1169](https://github.com/skyphusion-labs/pagefeather/issues/1169)). A blocks checkout order
+  takes about 5 to 7 s, and that is database time, about 13 ms a query
+  ([#1210](https://github.com/skyphusion-labs/pagefeather/issues/1210)).
+  [PR #1219](https://github.com/skyphusion-labs/pagefeather/pull/1219) (merged, #1218) sends an
+  order's transient deletes as one statement; before it, an order took 9.3 to 11.8 s. Order emails
+  now go 2 to 11 s after an order, against 12 to 122 s before
+  ([#1215](https://github.com/skyphusion-labs/pagefeather/issues/1215), fixed by
+  [PR #1224](https://github.com/skyphusion-labs/pagefeather/pull/1224), merged). Both figures are
+  from each PR's head before its merge (results.md rows "wc arm B 3" and "wc arm B 4"). The WooCommerce
   "development version" admin notice is fixed
   ([#1221](https://github.com/skyphusion-labs/pagefeather/issues/1221),
   [PR #1227](https://github.com/skyphusion-labs/pagefeather/pull/1227) merged). A live check on `cf759p`
@@ -278,7 +280,7 @@ These are short verdicts; the linked doc carries the numbers, dates and caveats.
 These are the latest suite rows in [docs/results.md](docs/results.md), from 2026-11-20 and 2026-11-21. The same summary, with the open items, is in [docs/support-matrix.md](docs/support-matrix.md). The 12 of 12 figures in the table above are `tests/woo.py`. They are a different test from the upstream wc suite.
 
 - **Hyperdrive WordPress** (`cf759hw`, WordPress only, WooCommerce not installed on that site): the wp suite is 18 of 18, and routes.py had 0 failures. The Worker is placed next to the database (#1054). On a Hyperdrive store (`cf759hl`) the latest wp row is 17 of 18. That row is from before #1167, and no later wp row re-measures it.
-- **Hyperdrive WooCommerce** (`cf759hl`): the latest full wc suite is 169 expected, 57 unexpected, 3 skipped (Browser Run, build `b27cd3c`). Held-block 503s in that run (#1177) are gone on the 8 files that hit them (#1180). Blocks checkout is slow: the order takes 9.3 to 11.8 s because of per-order transient deletes (#1218, #1210). PR #1219 is open, so that fix is in progress, not fixed. Order emails can wait 12 to 122 s (#1215, open). PR #1224 is open, so that fix is in progress, not fixed. The WooCommerce "development version" admin notice is fixed (#1221, PR #1227 merged). No later suite row re-measures that notice.
+- **Hyperdrive WooCommerce** (`cf759hl`): the latest full wc suite is 169 expected, 57 unexpected, 3 skipped (Browser Run, build `b27cd3c`). Held-block 503s in that run (#1177) are gone on the 8 files that hit them (#1180). Blocks checkout: an order took 9.3 to 11.8 s because of per-order transient deletes (#1218). PR #1219 (merged) sends them as one statement. On its head, 10 of 10 checkout tests passed and an order took 4.8 to 6.8 s, which is database time (#1210). Order emails waited 12 to 122 s; PR #1224 (merged, #1215) wakes the cron, and on its head they went 2 to 11 s after an order, with order-emails 6 of 6 (rows "wc arm B 3" and "wc arm B 4"). No full wc suite has run since those merges. The WooCommerce "development version" admin notice is fixed (#1221, PR #1227 merged). A live check on `cf759p` found it on 0 of 3 admin pages (row "#1227 live"). No conformance suite row tests the notice.
 - **DO WordPress on Paid:** Browser Run wp on `cf759p` is 18 of 18. A local run on the same build was 17 of 18 because of a memory reset (#1022, open). WfP `cf759a` wp is 17 of 18, the same reset.
 - **DO WooCommerce on Paid** (2026-11-20, no later wc row): Paid DO `cf759p` is 176 expected and 51 unexpected. WfP `cf759a` is 178 expected and 50 unexpected. The open engine classes are the memory reset (#1022) and parallel REST 503s (#1042).
 - **DO WordPress on Free** (`cf759f`, no WooCommerce, media on): wp is 18 of 18, routes.py had 0 failures, and uploads persist (`media_probe.py`, 14 checks).
