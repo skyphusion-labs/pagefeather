@@ -11,7 +11,7 @@
 import { createConnection } from 'mysql2/promise';
 import { Buffer } from 'node:buffer';
 
-import { createConnector } from './connector.mjs';
+import { createConnector, boundedQuery, queryTimeoutMs } from './connector.mjs';
 
 // #1101: one connection per PHP run (#1087), opened on first use; a rejected connect is retried once, never cached.
 let ENV_FOR_CONNECT = null;
@@ -42,7 +42,18 @@ export async function mysqlQuery(env, m) {
 	const sql = m.mysql;
 	try {
 		const c = await connection(env);
-		const [result, fields] = await c.query({ sql, rowsAsArray: true, typeCast: false });
+		let result, fields;
+		try {
+			[result, fields] = await boundedQuery(c.query({ sql, rowsAsArray: true, typeCast: false }), queryTimeoutMs(env)); // #1359 (a)
+		} catch (e) {
+			if (e && e.timedOut) {
+				// Destroyed and never reused; the statement is not retried.
+				console.log(JSON.stringify({ '@event': 'query-timeout', m: 'query-timeout', ms: e.ms }));
+				connector.reset();
+				try { if (typeof c.destroy === 'function') c.destroy(); } catch { /* already closed */ }
+			}
+			throw e;
+		}
 		if (!Array.isArray(result)) return { ok: true, affected: result.affectedRows || 0, insert_id: result.insertId || 0 };
 		const binary = (fields || []).map((f) => f.characterSet === 63);
 		const rows = result.map((r) => r.map((v, i) => (v === null ? null : binary[i] ? { $b: Buffer.from(v).toString('base64') } : Buffer.from(v).toString('utf8'))));

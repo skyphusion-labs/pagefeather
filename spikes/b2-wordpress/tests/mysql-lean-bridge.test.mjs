@@ -94,7 +94,7 @@ test('DEFAULT PATH: index-a-lean.js registers mysql-lean-bridge.js, which uses c
 	assert.match(entry, /setDbHandler\(\{ query: mysqlQuery, end: mysqlEnd, reset: mysqlReset, oneShot: mysqlOneShot(, connStats: mysqlConnStats)? \}\);/); // #1169: plus the connect counts
 	assert.doesNotMatch(entry, /mysql-bridge\.js/, 'not the mysql2 bridge');
 	const bridge = readFileSync(new URL('../mysql-lean-bridge.js', import.meta.url), 'utf8');
-	assert.match(bridge, /import \{ createConnector \} from '\.\/connector\.mjs';/);
+	assert.match(bridge, /import \{ createConnector(, [A-Za-z, ]+)? \} from '\.\/connector\.mjs';/); // #1359: plus the query bound's names
 	assert.match(bridge, /const connector = createConnector\(/);
 	assert.match(bridge, /const one = createConnector\(openLean\(env\), \{ log \}\);/, 'oneShot is bounded too');
 	assert.match(bridge, /export async function mysqlEnd\(\) \{\n(\t((inTx|lostInTx) = false|tempTables\.clear\(\));\n)*\tawait connector\.end\(\);\n\}/); // #1178: the run's transaction state is cleared first
@@ -298,4 +298,55 @@ live('#1169 the lean bridge counts its connects (n and ms) for the perf line; in
 	await bridge.mysqlEnd();
 	const entry = readFileSync(new URL('../index-a-lean.js', import.meta.url), 'utf8');
 	assert.match(entry, /setDbHandler\(\{ query: mysqlQuery, end: mysqlEnd, reset: mysqlReset, oneShot: mysqlOneShot, connStats: mysqlConnStats \}\);/);
+});
+
+// #1359 (a): a query is bounded. mysqlQuery awaited c.query() with no timeout (connect and end were bounded, #1101). A query
+// that never settles held the PHP run, and with it the isolate's lock: every later request on the isolate was shed (cf759hl,
+// #1277 arm (b): 7 isolates, one for 56 minutes). On the bound: the connection is destroyed and never reused, the statement
+// fails as a lost connection (errno 2013, so PHP gets a database error, not a hang), it is never retried, and inside a
+// transaction the run fails (no reconnect).
+const QENV = { ...ENV, DB_QUERY_TIMEOUT_MS: '200' };
+// A hung bridge call must FAIL these tests, not block the run: on the old code a never-settling query never answers.
+const hungGuard = (p, ms = 3000) => Promise.race([p, new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('HUNG: no answer within ' + ms + ' ms')), ms); if (t.unref) t.unref(); })]);
+async function captureLog(fn) {
+	const orig = console.log; const out = [];
+	console.log = (s) => { try { out.push(JSON.parse(s)); } catch { out.push(s); } };
+	try { return { r: await fn(), out }; } finally { console.log = orig; }
+}
+live('#1359 a query that never settles fails at the bound (errno 2013), its connection destroyed and not reused', async () => {
+	let connects = 0; let destroyed = 0;
+	lean.connect = async () => { connects++; return connects === 1 ? okConn({ query: never, destroy: () => { destroyed++; } }) : okConn(); };
+	bridge.mysqlReset();
+	const t0 = Date.now();
+	const { r, out } = await hungGuard(captureLog(() => bridge.mysqlQuery(QENV, { mysql: 'SELECT * FROM t' })));
+	const ms = Date.now() - t0;
+	assert.equal(r.ok, false);
+	assert.equal(r.errno, 2013);
+	assert.match(r.error, /timed out after 200 ms/);
+	assert.ok(ms >= 190 && ms < 1500, 'at the bound, not hung: ' + ms + ' ms');
+	assert.equal(destroyed, 1, 'destroyed');
+	assert.equal(connects, 1, 'a timed-out read is NOT retried (it could wait the bound again)');
+	assert.ok(out.some((o) => o && o['@event'] === 'query-timeout' && o.ms === 200), 'a named query-timeout line');
+	assert.equal((await bridge.mysqlQuery(QENV, { mysql: 'SELECT 1' })).ok, true, 'the next statement runs');
+	assert.equal(connects, 2, 'on a NEW connection (the dead one is never reused)');
+});
+live('#1359 a timeout inside a transaction fails the run: no reconnect', async () => {
+	let connects = 0; let n = 0;
+	lean.connect = async () => { connects++; return okConn({ query: async () => (++n === 2 ? never() : { kind: 'ok', affectedRows: 0, insertId: 0 }) }); };
+	bridge.mysqlReset();
+	assert.equal((await bridge.mysqlQuery(QENV, { mysql: 'START TRANSACTION' })).ok, true);
+	const r = await hungGuard(bridge.mysqlQuery(QENV, { mysql: 'UPDATE t SET a = 1' }));
+	assert.equal(r.errno, 2013);
+	const after = await bridge.mysqlQuery(QENV, { mysql: 'SELECT 1' });
+	assert.equal(after.ok, false, 'later statements of the run fail');
+	assert.match(after.error, /connection lost earlier in this run/);
+	assert.equal(connects, 1, 'no reconnect inside the run');
+});
+live('#1359 the one-shot query is bounded too', async () => {
+	lean.connect = async () => okConn({ query: never });
+	const t0 = Date.now();
+	const r = await hungGuard(bridge.mysqlOneShot(QENV, 'SELECT 1'), 6000);
+	assert.equal(r.ok, false);
+	assert.equal(r.errno, 2013);
+	assert.ok(Date.now() - t0 < 4000, 'bounded');
 });

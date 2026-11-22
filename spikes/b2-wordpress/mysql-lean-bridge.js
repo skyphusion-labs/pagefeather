@@ -10,7 +10,7 @@
 import { LeanMysql } from './mysql-lean.js';
 import { Buffer } from 'node:buffer';
 
-import { createConnector } from './connector.mjs';
+import { createConnector, boundedQuery, queryTimeoutMs } from './connector.mjs';
 import { isConnectionFault, retryableRead, tempTableName } from './mysql-fault.mjs';
 
 // #1101: approach A's DEFAULT bridge (index-a-lean.js). One connection per PHP run (#1087), opened on first use. A rejected
@@ -50,14 +50,14 @@ async function runOnce(env, sql) {
 	let c = null;
 	try {
 		c = await connection(env);
-		const res = await c.query(sql);
+		const res = await boundedQuery(c.query(sql), queryTimeoutMs(env)); // #1359 (a)
 		if (res.kind === 'ok') return { ok: true, affected: res.affectedRows || 0, insert_id: res.insertId || 0 };
 		const binary = res.columns.map((f) => f.characterSet === 63);
 		const rows = res.rows.map((r) => r.map((v, i) => (v === null ? null : binary[i] ? { $b: Buffer.from(v).toString('base64') } : Buffer.from(v).toString('utf8'))));
 		return { ok: true, columns: res.columns.map((f) => f.name), rows };
 	} catch (e) {
 		const error = String((e && e.message) || e);
-		return { ok: false, error, errno: e && e.errno, conn: c };
+		return { ok: false, error, errno: e && e.errno, conn: c, timedOut: !!(e && e.timedOut), ms: e && e.ms };
 	}
 }
 
@@ -84,7 +84,18 @@ export async function mysqlQuery(env, m) {
 		if (tmp) tempTables.add(tmp);
 		return first;
 	}
-	const { conn, ...reply } = first;
+	const { conn, timedOut, ms, ...reply } = first;
+	// #1359 (a): a query past the bound. Its connection is destroyed and never reused; the statement is never retried (it
+	// could wait the bound again); inside a transaction the run fails, as for a lost connection.
+	if (timedOut) {
+		dropDead(conn);
+		log({ '@event': 'query-timeout', m: 'query-timeout', ms, inTx, write: !retryableRead(sql, tempTables) });
+		if (inTx) {
+			lostInTx = true;
+			inTx = false;
+		}
+		return reply;
+	}
 	if (!isConnectionFault(reply.error)) return reply;
 	dropDead(conn);
 	if (inTx) {
@@ -113,7 +124,17 @@ export async function mysqlOneShot(env, sql) {
 	const one = createConnector(openLean(env), { log });
 	try {
 		const c = await one.get();
-		const res = await c.query(sql);
+		let res;
+		try {
+			res = await boundedQuery(c.query(sql), queryTimeoutMs(env)); // #1359 (a)
+		} catch (e) {
+			if (e && e.timedOut) {
+				log({ '@event': 'query-timeout', m: 'query-timeout', ms: e.ms, oneShot: true });
+				one.reset();
+				try { if (typeof c.destroy === 'function') c.destroy(); } catch { /* already closed */ }
+			}
+			throw e;
+		}
 		if (res.kind === 'ok') return { ok: true, affected: res.affectedRows || 0, insert_id: res.insertId || 0 };
 		const binary = res.columns.map((f) => f.characterSet === 63);
 		const rows = res.rows.map((r) => r.map((v, i) => (v === null ? null : binary[i] ? { $b: Buffer.from(v).toString('base64') } : Buffer.from(v).toString('utf8'))));
