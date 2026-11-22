@@ -20,6 +20,8 @@ WooCheckout class). See docs/results.md and issue #189.
 Usage:
   BASE=https://<site>.workers.dev ADMIN_PASSWORD=<pw> python3 tests/upload/upload_ceiling.py
   (ADMIN_PASSWORD may instead be a file path via ADMIN_PASSWORD_FILE.)
+  SPIKE_TOKEN, when set, is sent as x-spike-token so the upload response can show x-wasm-mib.
+  When it is not set, a blank or a 0 is reported as not readable without the token (#1271).
 
 Exit codes:
   0  the attachment was stored (upload works on this deploy)
@@ -48,6 +50,35 @@ PNG_B64 = (
     "xat3AAAAAElFTkSuQmCC"
 )
 UA = "upload-ceiling-check/1.0"
+WASM_UNREADABLE = "x-wasm-mib: not readable without the token"
+
+
+def header_get(h, name):
+    if not h:
+        return None
+    if not isinstance(h, dict):
+        return h.get(name)
+    for k, v in h.items():
+        if str(k).lower() == name:
+            return v
+    return None
+
+
+def wasm_mib_reading(value):
+    """The heap header. Without SPIKE_TOKEN, a blank or a 0 is not a measurement (#1271)."""
+    if os.environ.get("SPIKE_TOKEN"):
+        if value is None or str(value).strip() == "":
+            return None
+        return str(value)
+    if value is None or str(value).strip() in ("", "0"):
+        return WASM_UNREADABLE
+    return str(value)
+
+
+def add_spike_token(req):
+    tok = os.environ.get("SPIKE_TOKEN")
+    if tok and not req.has_header("x-spike-token"):
+        req.add_header("x-spike-token", tok)
 
 
 def main():
@@ -69,6 +100,7 @@ def main():
         req = urllib.request.Request(base + path)
         for k, v in (headers or {}).items():
             req.add_header(k, v)
+        add_spike_token(req)
         try:
             r = op.open(req, timeout=90)
             return r.status, r.read().decode("utf-8", "replace"), dict(r.headers)
@@ -80,6 +112,7 @@ def main():
         req = urllib.request.Request(base + path, data=body)
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
         req.add_header("User-Agent", UA)
+        add_spike_token(req)
         r = op.open(req, timeout=90)
         return r.status, r.read().decode("utf-8", "replace")
 
@@ -118,6 +151,7 @@ def main():
         req = urllib.request.Request(base + "/wp-admin/async-upload.php", data=body)
         req.add_header("Content-Type", "multipart/form-data; boundary=" + boundary)
         req.add_header("User-Agent", UA)
+        add_spike_token(req)
         try:
             r = op.open(req, timeout=120)
             return r.status, r.read().decode("utf-8", "replace"), dict(r.headers)
@@ -132,11 +166,15 @@ def main():
             break
         time.sleep(1.5)
 
-    mib = hdrs.get("x-wasm-mib")
+    mib = wasm_mib_reading(header_get(hdrs, "x-wasm-mib"))
     oom = "exceeded its memory" in body
     stored = '"success":true' in body
 
-    print("upload: http %s x-wasm-mib=%s attempts=%d" % (status, mib, attempts))
+    if mib == WASM_UNREADABLE:
+        print(WASM_UNREADABLE)
+        print("upload: http %s attempts=%d" % (status, attempts))
+    else:
+        print("upload: http %s x-wasm-mib=%s attempts=%d" % (status, mib, attempts))
     if stored:
         print("RESULT: stored (upload works on this deploy)")
         return 0

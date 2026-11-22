@@ -1,8 +1,23 @@
 #!/usr/bin/env python3
 # Break test: try to make a deploy fail. Usage: B=https://<worker> ADMIN_PASSWORD=... python3 tests/break.py
 # Each check prints PASS or FAIL. Exits 1 on any FAIL. It writes posts and a comment to the site.
+# SPIKE_TOKEN, when set, is sent as x-spike-token. Without it, a blank or a 0 heap size is
+# reported as not readable without the token (#1271).
 import http.cookiejar, urllib.request, urllib.parse, json, os, re, sys, time, concurrent.futures as cf
 B = os.environ.get("B", "https://wp-on-d1-paid.skyphusion.workers.dev")
+WASM_UNREADABLE = "x-wasm-mib: not readable without the token"
+
+
+def wasm_mib_reading(value):
+    # Without SPIKE_TOKEN, a blank or a 0 is not a heap size (#1271).
+    if os.environ.get("SPIKE_TOKEN"):
+        if value is None or str(value).strip() == "":
+            return None
+        return str(value)
+    if value is None or str(value).strip() in ("", "0"):
+        print(WASM_UNREADABLE, flush=True)
+        return WASM_UNREADABLE
+    return str(value)
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *a, **k): return None
 def opener(jar=None):
@@ -10,7 +25,11 @@ def opener(jar=None):
     o = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar), NoRedirect)
     o.jar = jar; return o
 def req(o, path, data=None, headers=None, method=None, timeout=120):
-    h = {"User-Agent": "wp-on-cf-breaktest"}; h.update(headers or {})
+    h = {"User-Agent": "wp-on-cf-breaktest"}
+    tok = os.environ.get("SPIKE_TOKEN")
+    if tok:
+        h["x-spike-token"] = tok
+    h.update(headers or {})
     if isinstance(data, dict): data = urllib.parse.urlencode(data).encode()
     r = urllib.request.Request(B + path, data=data, headers=h, method=method)
     t = time.time()
@@ -21,7 +40,7 @@ def req(o, path, data=None, headers=None, method=None, timeout=120):
     except Exception as e:
         return {"code": "EXC", "err": repr(e)[:160], "s": round(time.time()-t, 2), "body": b"", "h": {}}
     return {"code": code, "s": round(time.time()-t, 2), "body": body, "h": hd,
-            "calls": hd.get("x-d1-calls"), "fail": hd.get("x-d1-failures"), "mib": hd.get("x-wasm-mib"), "recycled": hd.get("x-runtime-recycled")}
+            "calls": hd.get("x-d1-calls"), "fail": hd.get("x-d1-failures"), "mib": wasm_mib_reading(hd.get("x-wasm-mib")), "recycled": hd.get("x-runtime-recycled")}
 def short(r):
     return {k: r.get(k) for k in ("code", "s", "calls", "fail", "mib", "recycled", "err") if r.get(k) is not None}
 def login():
