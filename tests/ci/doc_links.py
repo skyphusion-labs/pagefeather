@@ -17,8 +17,14 @@ It reads every file git tracks under the root, and it fails (exit 1) on any of t
    names spikes/b2-wordpress/docs/pdf-invoice.md that way). A stub counts as existing, because it
    is a file. tests/ci/doc_links_test.py is not read: its path strings are planted fixtures.
 
-It does not check that a #fragment names a heading: a stub's new page may reword a heading later
-(#1305, "Open questions").
+4. A #fragment that names no anchor in its target (#1377). This covers a relative link to a tracked
+   .md file, and a same-page link (#x), in a tracked .md file. An anchor is a heading's GitHub slug
+   (lower case; markup, and punctuation other than - and _, removed; each space a -; a repeated
+   heading gets -1, -2), or an HTML id= or name= in the target. Fenced code holds no heading. The
+   fragment is percent-decoded and compared as written. A fragment on any other file (a .py#L10
+   line link) is not checked. Links FROM a stub are not checked for their fragment, only for their
+   file (rule 1): a stub is an old pointer, and its new page may reword a heading later (#1305,
+   "Open questions").
 
 It prints every failure as file:line, and the count of what it checked, and it exits 1 on zero
 Markdown files: a check that read nothing must not pass.
@@ -35,6 +41,9 @@ FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 CODESPAN = re.compile(r"(`+)(.+?)\1")
 STUB = re.compile(r"^This page moved to \[")
 DOCPATH = re.compile(r"(?<![A-Za-z0-9_./-])docs/[A-Za-z0-9_./-]*?[A-Za-z0-9_-]\.md(?![A-Za-z0-9_])")
+HEADING = re.compile(r"^\s{0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
+SETEXT = re.compile(r"^\s{0,3}(=+|-+)\s*$")
+HTMLID = re.compile(r"""<[A-Za-z][^>]*?\s(?:id|name)\s*=\s*["']([^"']+)["']""")
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 FIXTURES = {"tests/ci/doc_links_test.py"}  # planted broken paths, by design
 
@@ -70,6 +79,54 @@ def md_lines(text):
         yield n, CODESPAN.sub(lambda c: " " * len(c.group(0)), line)
 
 
+def slug(text):
+    """GitHub's heading anchor: link text kept, markup dropped, lower case, spaces to -."""
+    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = text.strip().lower().replace("`", "").replace("*", "")
+    text = re.sub(r"[^\w\- ]", "", text)
+    return text.replace(" ", "-")
+
+
+def anchors(text):
+    """Every anchor a Markdown file defines: heading slugs (repeats numbered) and HTML ids."""
+    seen = {}
+    out = set()
+    prev = None
+    fence = None
+    for line in text.splitlines():
+        m = FENCE.match(line)
+        if fence:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                fence = None
+            prev = None
+            continue
+        if m:
+            fence = m.group(1)
+            prev = None
+            continue
+        out.update(HTMLID.findall(line))
+        h = HEADING.match(line)
+        title = h.group(2) if h else (prev if prev is not None and SETEXT.match(line) else None)
+        if title is not None:
+            base = slug(title)
+            n = seen.get(base, 0)
+            seen[base] = n + 1
+            out.add(base if n == 0 else "%s-%d" % (base, n))
+            prev = None
+            continue
+        prev = line if line.strip() and not re.match(r"^\s{0,3}([-*+]|\d+[.)]|\||>)", line) else None
+    return out
+
+
+def fragment(target):
+    if target.startswith("<") and target.endswith(">"):
+        target = target[1:-1]
+    if "#" not in target or SCHEME.match(target) or target.startswith("//"):
+        return None
+    return urllib.parse.unquote(target.split("#", 1)[1])
+
+
 def target_path(root, md_rel, target):
     """The repo-relative path a link target names, or None if it is not a relative file link."""
     if target.startswith("<") and target.endswith(">"):
@@ -93,7 +150,15 @@ def exists(root, rel):
 def check(root):
     files = tracked(root)
     fails = []
-    n_md = n_links = n_stubs = n_paths = 0
+    n_md = n_links = n_stubs = n_paths = n_frags = 0
+    cache = {}
+
+    def anchors_of(rel):
+        if rel not in cache:
+            t = text_of(os.path.join(root, rel))
+            cache[rel] = anchors(t) if t is not None else set()
+        return cache[rel]
+    tracked_set = set(files)
     for rel in files:
         full = os.path.join(root, rel)
         if os.path.islink(full) or rel in FIXTURES:
@@ -103,17 +168,22 @@ def check(root):
             continue
         if rel.endswith(".md"):
             n_md += 1
-            stub = False
+            stub = any(STUB.match(l) for _, l in md_lines(text))
             stub_links = 0
             for n, line in md_lines(text):
-                if STUB.match(line):
-                    stub = True
                 targets = [m.group(1) for m in INLINE.finditer(line)]
                 m = REFDEF.match(line)
                 if m:
                     targets.append(m.group(1))
                 for t in targets:
+                    frag = fragment(t)
                     p = target_path(root, rel, t)
+                    if frag and not stub:
+                        doc = rel if t.lstrip("<").startswith("#") else p
+                        if doc and doc.endswith(".md") and doc in tracked_set:
+                            n_frags += 1
+                            if frag not in anchors_of(doc):
+                                fails.append("%s:%d: #%s names no heading or anchor in %s" % (rel, n, frag, doc))
                     if p is None:
                         continue
                     n_links += 1
@@ -132,8 +202,8 @@ def check(root):
                     fails.append("%s:%d: path string names a missing file: %s" % (rel, n, m.group(0)))
     for f in fails:
         print("  FAIL " + f)
-    print("doc links: %d Markdown files, %d relative links, %d stubs, %d docs/*.md path strings; %d failures"
-          % (n_md, n_links, n_stubs, n_paths, len(fails)))
+    print("doc links: %d Markdown files, %d relative links, %d #fragments, %d stubs, %d docs/*.md path strings; %d failures"
+          % (n_md, n_links, n_frags, n_stubs, n_paths, len(fails)))
     if n_md == 0:
         print("  no tracked Markdown file under %s: the check read nothing" % root, file=sys.stderr)
         return 1

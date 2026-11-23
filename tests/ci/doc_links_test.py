@@ -59,7 +59,7 @@ case("a relative link to a missing file fails", dict(OK, **{"README.md": "x\n[go
 case("a link resolves from the linking file's own folder", dict(OK, **{"docs/guide/c.md": "[a](../a.md) [b](b.md)\n"}), 0)
 case("a link that only exists from the repo root, not from the file's folder, fails",
      dict(OK, **{"docs/guide/c.md": "[a](docs/a.md)\n"}), 1, has=["docs/guide/c.md:1: link to a missing file: docs/a.md"])
-case("a fragment is not checked, the file is", dict(OK, **{"README.md": "[a](docs/a.md#no-such-heading)\n"}), 0)
+case("a fragment that names a heading passes", dict(OK, **{"README.md": "[a](docs/a.md#a)\n"}), 0, has=["1 #fragments"])
 case("a fragment on a missing file still fails", dict(OK, **{"README.md": "[x](docs/gone.md#h)\n"}), 1,
      has=["link to a missing file: docs/gone.md#h"])
 case("an image to a missing file fails", dict(OK, **{"README.md": "![p](img/p.png)\n"}), 1,
@@ -70,13 +70,38 @@ case("a link to a folder that exists passes", dict(OK, **{"README.md": "[g](docs
 case("a root-absolute link resolves from the repo root", dict(OK, **{"docs/guide/c.md": "[a](/docs/a.md)\n"}), 0)
 case("a link that leaves the repo fails", dict(OK, **{"README.md": "[o](../outside.md)\n"}), 1,
      has=["link to a missing file: ../outside.md"])
-case("https, mailto and #fragment links are not relative",
-     dict(OK, **{"README.md": "[w](https://example.com/x.md) [m](mailto:a@b.c) [h](#top)\n"}), 0)
+case("https, mailto and #fragment links are not relative files",
+     dict(OK, **{"README.md": "# Top\n\n[w](https://example.com/x.md) [m](mailto:a@b.c) [h](#top)\n"}), 0, has=["0 relative links"])
 case("a percent-encoded path is decoded", dict(OK, **{"docs/a b.md": "# AB\n", "README.md": "[ab](docs/a%20b.md)\n"}), 0)
 case("a link in fenced code is not checked", dict(OK, **{"README.md": "```\n[x](nope.md)\n```\n"}), 0)
 case("a link in inline code is not checked", dict(OK, **{"README.md": "Use `[x](nope.md)` like this.\n"}), 0)
 case("a link after a closed fence is checked again", dict(OK, **{"README.md": "```\nx\n```\n[x](nope.md)\n"}), 1,
      has=["README.md:4: link to a missing file: nope.md"])
+
+# 4. #fragments (#1377)
+H = {"docs/x.md": "# X\n", "docs/h.md": "# Top\n\n## The `code` part: *big* (#12)\n\n## Twice\n\n## Twice\n\n```\n## In a fence\n```\n\n<a id=\"raw-id\"></a>\n\nSetext one\n==========\n\n## A [linked](x.md) word\n"}
+case("a fragment that names no heading fails, with file:line", dict(OK, **{"README.md": "x\n[a](docs/a.md#no-such-heading)\n"}), 1,
+     has=["README.md:2: #no-such-heading names no heading or anchor in docs/a.md"])
+case("a heading slug drops code marks, emphasis and punctuation", dict(H, **{"README.md": "[x](docs/h.md#the-code-part-big-12)\n"}), 0)
+case("a slug keeps the case rule: an upper-case fragment fails", dict(H, **{"README.md": "[x](docs/h.md#Top)\n"}), 1,
+     has=["#Top names no heading"])
+case("a repeated heading gets -1", dict(H, **{"README.md": "[x](docs/h.md#twice) [y](docs/h.md#twice-1)\n"}), 0)
+case("a third copy of a repeated heading does not exist", dict(H, **{"README.md": "[x](docs/h.md#twice-2)\n"}), 1,
+     has=["#twice-2 names no heading"])
+case("a heading inside fenced code is not an anchor", dict(H, **{"README.md": "[x](docs/h.md#in-a-fence)\n"}), 1,
+     has=["#in-a-fence names no heading"])
+case("an HTML id is an anchor", dict(H, **{"README.md": "[x](docs/h.md#raw-id)\n"}), 0)
+case("a setext heading is an anchor", dict(H, **{"README.md": "[x](docs/h.md#setext-one)\n"}), 0)
+case("a link inside a heading keeps its text", dict(H, **{"README.md": "[x](docs/h.md#a-linked-word)\n"}), 0)
+case("a same-page fragment is checked", {"README.md": "# Here\n\n[u](#here) [d](#gone)\n"}, 1,
+     has=["README.md:3: #gone names no heading or anchor in README.md"], lacks=["#here names"])
+case("a percent-encoded fragment is decoded", dict(H, **{"README.md": "[x](docs/h.md#raw%2Did)\n"}), 0)
+case("a fragment on a non-Markdown file is not checked", dict(OK, **{"tool.py": "x\n", "README.md": "[t](tool.py#L1)\n"}), 0)
+case("a fragment on a URL is not checked", dict(OK, **{"README.md": "[w](https://example.com/a.md#nope)\n"}), 0)
+case("a stub's own fragments are not checked, its file is",
+     dict(OK, **{"docs/old.md": "# Old\n\nThis page moved to [B](guide/b.md#reworded).\n"}), 0)
+case("a link INTO a stub's target is still checked", dict(OK, **{"docs/old.md": "# Old\n\nThis page moved to [B](guide/b.md).\n", "README.md": "[b](docs/guide/b.md#reworded)\n"}), 1,
+     has=["#reworded names no heading or anchor in docs/guide/b.md"])
 
 # 2. stubs
 STUB = "# Old\n\nThis page moved to [B](guide/b.md).\n\n## H\n\nThe current text is [H](guide/b.md#h).\n"
