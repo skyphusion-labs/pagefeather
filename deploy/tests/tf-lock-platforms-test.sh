@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test of #1382: every deploy Terraform root's .terraform.lock.hcl already holds the provider hashes of each
+# Test of #1382 and #1389: every deploy and test-fixture Terraform root's .terraform.lock.hcl already holds the provider hashes of each
 # platform an operator, a box or CI runs on, so `terraform init` there never REWRITES the tracked lock. A rewrite
 # leaves the clone dirty, and every build from it is stamped -dirty (seen on a fresh Linux box, 2026-11-23: the
 # locks held one platform's h1 hash, and init added linux_amd64's). For each root it copies the .tf files and the
@@ -11,6 +11,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 PLATFORMS="linux_amd64 linux_arm64 darwin_arm64 darwin_amd64"
 ROOTS="deploy/terraform deploy/mysql deploy/wfp/terraform/shared deploy/wfp/terraform/site"
+# #1389: the test fixtures' roots too. A clone that ran their init is just as dirty for build-id.sh.
+ROOTS="$ROOTS tests/a/terraform tests/a2/terraform tests/do/terraform tests/fixtures/terraform tests/ssh-source tests/wfp/terraform"
 fails=0
 check() { if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1: got [$2], want [$3]"; fails=$((fails + 1)); fi; }
 command -v terraform >/dev/null 2>&1 || { echo "SKIP: no terraform on PATH (this is not a pass)"; exit 0; }
