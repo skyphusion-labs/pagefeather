@@ -2,6 +2,8 @@
 // iso and at) can be tested against the PHP runs of its isolate. php-lock's "released" line logs only contended or long
 // runs, which leaves the interval set incomplete. ON only with the site var PF_TRACE_PHP_RUNS=1, which nothing in deploy/
 // renders: an operator sets it with --var on a THROWAWAY. Unset: no line, and no work past reading the flag.
+// Set it with `deploy/wr deploy --config <site config> --var PF_TRACE_PHP_RUNS:1`: a deploy resets the log redaction, and
+// deploy/wr re-applies it and reads it back (#1410). A deploy outside deploy/wr leaves query strings in the logs.
 export function phpRunTraceOn(env) {
 	return !!env && env.PF_TRACE_PHP_RUNS === '1';
 }

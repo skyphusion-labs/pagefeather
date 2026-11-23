@@ -534,3 +534,26 @@ add_filter(
 		return $upload;
 	}
 );
+
+// WooCommerce's force download (WC_Download_Handler::parse_file_path) maps a file URL under the uploads baseurl to
+// the basedir, which is r2://uploads here, then keeps only the parsed PATH for a scheme that is not http, https or
+// ftp: the buyer's file becomes "/woocommerce_uploads/<f>", which opens nothing ("File not found"). This filter runs
+// at the end of parse_file_path, so only after download() has checked the buyer's order, key and limits. It gives
+// a local path back its r2:// form when that file is not on the local filesystem and IS in R2. A remote file, an
+// existing local file, a path with a ".." segment, or a path that is in neither place is returned unchanged.
+// Tested in tests/wc-download-path-test.php.
+add_filter(
+	'woocommerce_download_parse_file_path',
+	function ( $file_path, $remote_file = false ) {
+		if ( $remote_file || ! is_string( $file_path ) || '' === $file_path || '/' !== $file_path[0] ) {
+			return $file_path;
+		}
+		if ( preg_match( '#(^|/)\.\.(/|$)#', $file_path ) || @file_exists( $file_path ) ) {
+			return $file_path;
+		}
+		$r2 = 'r2://uploads' . $file_path;
+		return @file_exists( $r2 ) ? $r2 : $file_path;
+	},
+	10,
+	2
+);
