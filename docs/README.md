@@ -9,6 +9,7 @@ This page is the map. The repository holds a framework you run on your own Cloud
 
 ## Run a site
 
+- [guide/start-here-mysql.md](guide/start-here-mysql.md). Start here for a real WooCommerce store: the MySQL option, step by step (pre-alpha, #1077).
 - [guide/framework.md](guide/framework.md). The quickstart, the default integrations, and edge security.
 - [guide/onboarding.md](guide/onboarding.md). Approach A, from a MySQL choice to a site.
 - [guide/from-lamp.md](guide/from-lamp.md). A LAMP WordPress host, mapped onto this stack.
