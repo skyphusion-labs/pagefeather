@@ -331,17 +331,21 @@ def main():
              setup=lambda s: (setattr(s, "cache", "DYNAMIC"), setattr(s, "stamp", "same")))
         # #1277 round 2 (the lead's ruling): --cache on-unverified, for arm (a) only.
         NEW = lambda s: (setattr(s, "cache", "EXPIRED"), setattr(s, "stamp", "new"))
-        case("on-unverified without --arm stops", r"on-unverified is declared for #1277 round 2 arm \(a\) only.*--arm \(none\)",
-             cache="on-unverified", setup=NEW)
+        rs, _ = case("on-unverified without --arm stops", r"on-unverified is declared for #1277 round 2 arm \(a\) only.*--arm \(none\)",
+                     cache="on-unverified", setup=NEW)
+        if rs.calls:
+            bad("on-unverified refusal: the site was contacted %d times (from rollins's #1391)" % len(rs.calls))
+        else:
+            ok("on-unverified refusal: the site was never contacted")
         case("on-unverified with --arm b stops", r"on-unverified is declared for #1277 round 2 arm \(a\) only.*--arm b",
              cache="on-unverified", setup=NEW, extra=["--arm", "b"])
         _, urd = case("on-unverified with --arm a and no stored body goes on, loudly", None, cache="on-unverified", setup=NEW,
                       extra=["--arm", "a"], expect_rc=0, want_out=[r"UNVERIFIED: --cache on-unverified", r"a stored body served: no"])
         uenv = open(os.path.join(urd, "env")).read() if os.path.exists(os.path.join(urd, "env")) else ""
-        if "PF_CONFORMANCE_CACHE=on-unverified" in uenv and "PF_CONFORMANCE_ARM=a" in uenv:
-            ok("on-unverified: the run's env records the mode and the arm")
+        if "PF_CONFORMANCE_CACHE=on-unverified" in uenv and "PF_CONFORMANCE_ARM=a" in uenv and "PF_CONFORMANCE_CACHE_SERVED=no" in uenv:
+            ok("on-unverified: the run's env records the mode, the arm and the result (served: no)")
         else:
-            bad("on-unverified: the run's env does not record PF_CONFORMANCE_CACHE=on-unverified and PF_CONFORMANCE_ARM=a")
+            bad("on-unverified: the run's env does not record PF_CONFORMANCE_CACHE=on-unverified, PF_CONFORMANCE_ARM=a and PF_CONFORMANCE_CACHE_SERVED=no")
         case("on-unverified with --arm a still stops when it cannot measure", r"--cache on-unverified: could not measure",
              cache="on-unverified", setup=lambda s: setattr(s, "stamp", "none"), extra=["--arm", "a"])
         case("on-unverified with --arm a and a stored body: no UNVERIFIED line needed", None, cache="on-unverified",

@@ -182,7 +182,7 @@ def check_cache(site, want):
     if want == "off" and (served or "HIT" in seen):
         raise Stop("--cache off, but the page cache answered (%s; x-pf-rendered %s): deploy with PAGE_CACHE_TTL=0"
                    % (",".join(seen), ",".join(stamps)))
-    return seen
+    return seen, served
 
 
 WC_BLOGNAME = "WooCommerce Core E2E Test Suite"
@@ -308,7 +308,7 @@ def cmd_prepare(a):
     say("admin: form login and REST nonce ok")
     if a.suite in ("wp", "gb"):
         editor_welcome_verify(site)
-    cache = check_cache(site, a.cache)
+    cache, served = check_cache(site, a.cache)
     pairs = [("WP_BASE_URL", site.base), ("WP_USERNAME", user)]
     if a.suite in ("wc", "wc-api", "wc-cpt"):
         cuser, cust, admin_email = wc_verify(site, user, password)
@@ -319,7 +319,8 @@ def cmd_prepare(a):
     if getattr(a, "arm", None):
         pairs += [("PF_CONFORMANCE_ARM", a.arm)]
     pairs += [("PF_CONFORMANCE_SUITE", a.suite), ("PF_CONFORMANCE_CACHE", a.cache),
-              ("PF_CONFORMANCE_CACHE_SEEN", ",".join(cache))]
+              ("PF_CONFORMANCE_CACHE_SEEN", ",".join(cache)),
+              ("PF_CONFORMANCE_CACHE_SERVED", "yes" if served else "no")]
     if a.suite in ("wp", "gb"):
         artifacts, storage = conformance_artifact_paths(a.run_dir)
         os.makedirs(os.path.dirname(storage), exist_ok=True)
