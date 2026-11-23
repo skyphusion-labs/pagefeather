@@ -15,14 +15,14 @@ We use two names, as on [Start here](start-here.md):
 
 - A Cloudflare account on the **Workers Paid** plan ($5 a month).
 - A computer with macOS or Linux. On Windows, use WSL and follow the Linux steps.
-- A **MySQL server** (MySQL 8, or MariaDB 10.6 or later). Check each line before you start:
-  - [ ] It has a **host name**, such as `db.example.com`, not only an IP address. By IP address, every query was about 6 times slower ([approach-a.md](../approach-a.md)).
+- A **MySQL server** (MySQL 8 or MariaDB; tested: Azure Database for MySQL 8.0). Check each line before you start:
+  - [ ] It has a **host name**, such as `db.example.com`, not only an IP address. By IP address, every query was about 6 times slower ([evidence](../approach-a.md)).
   - [ ] It accepts **SSL** connections.
   - [ ] Port **3306** is open to [Cloudflare's IP ranges](https://www.cloudflare.com/ips/).
-  - [ ] You have an **empty database** for this site, and a **user and a password** with full rights on it.
+  - [ ] You have an **empty database** for this site, and a **user and a password** with all rights on that database, so the install can make its tables.
   - [ ] You know its **cloud and region**, such as `azure:westus2` or `aws:us-east-1`. Your provider's console shows the region of the server. The cloud is `aws`, `gcp` or `azure`; for another host, use the nearest region of those three. The install needs it, so that the site runs next to your database. A site far from its database was 2 to 5 times slower ([full reference](../../deploy/README.md#options)).
 
-  To test the connection from your computer: `mysql --ssl-mode=REQUIRED -h <host> -u <user> -p <database>`. MEASURE: confirm on the box run.
+  To test the connection from your computer, first install a MySQL client (on Ubuntu: `sudo apt-get install -y mysql-client`; on macOS: `brew install mysql-client`). Then run `mysql --ssl-mode=REQUIRED -h <host> -u <user> -p <database>` and type the password. If it does not connect, your server may also need to allow your computer's IP address for this test. Cloudflare's IP ranges alone are enough for the site.
 
   No server yet? Choose a provider in the [onboarding guide](onboarding.md). Or `MYSQL=vultr` makes one: it needs a Vultr API key and a domain on Cloudflare, costs $10 a month billed by the hour while it exists, and the site's removal must remove it too. We did not run that path for this page ([full reference](../../deploy/README.md#variant-a-php-in-the-worker-mysql-through-hyperdrive-workers-paid)).
 
@@ -38,8 +38,6 @@ We use two names, as on [Start here](start-here.md):
    - Account, **Workers R2 Storage**, Edit
    - Account, **Hyperdrive**, Edit
    - Account, **Account Settings**, Read
-
-   MEASURE: confirm this is the smallest set on the box run.
 
    Select **Continue to summary**, then **Create Token**. Copy the token now. Cloudflare shows it only once.
 6. Copy your **Account ID**. It is on the right side of the **Workers & Pages** page.
@@ -71,9 +69,9 @@ VARIANT=a MYSQL=external \
   WOO_ACTIVE=1 MEDIA=1 BENCH=0 NAME=my-store ./deploy/deploy.sh
 ```
 
-It connects Cloudflare to your database, makes the site in your account, and installs WordPress and WooCommerce into your database. At the end it prints your site's address. MEASURE: the time on the box run.
+It connects Cloudflare to your database, makes the site in your account, and installs WordPress and WooCommerce into your database. At the end it prints your site's address. On our test machine (Linux, 3 CPUs) it took 15 minutes. 10 of those minutes were a wait for the site's background jobs to start, which happens on a new site today (#1381). The deploy still ends with success.
 
-If the deploy waits with "database not ready yet", Cloudflare cannot reach your server. Check the list in "What you need": the host name, SSL, port 3306, the user and the password. It stops after 10 minutes.
+If the deploy waits with "database not ready yet", Cloudflare could not set up the connection, most often because it cannot reach your server. Check the list in "What you need": the host name, SSL, port 3306, the user and the password. A wrong token looks the same. After 10 minutes it stops and prints the error.
 
 ### Step 5: get your admin password
 
@@ -106,7 +104,9 @@ From the `pagefeather` folder, with the same two `export` lines from step 4 in p
 NAME=my-store ./deploy/destroy.sh
 ```
 
-**It does not touch your MySQL database.** Your database and its tables stay, with your posts, pages, orders and users. Delete them on your server if you want them gone. MEASURE: the last line, and the tables still there, on the box run.
+It ends with `Deleted workspace "my-store"!`. It also prints a line that starts with `destroy: no deploy/mysql state`: that line is about a `MYSQL=vultr` server, and with your own server you can ignore it.
+
+**It does not touch your MySQL database.** Your database and its tables stay, with your posts, pages, orders and users (on our test, all 53 tables were still there after the remove). Delete them on your server if you want them gone.
 
 ## 3. What are my limits?
 
