@@ -50,7 +50,15 @@ class R2_Uploads_Stream {
 	 */
 	private static $heads = array();
 
-	/** #1424 trace of this request's bridge calls. Only with the operator header (index.js passes it only with the spike token). */
+	/** File types whose extension may appear in a trace key shape. Anything else after the last dot is a name. */
+	const TRACE_EXT = 'jpe?g|png|gif|webp|avif|heic|bmp|tiff?|svg|ico|pdf|zip|json|xml|txt|csv|mp3|mp4|m4a|wav|ogg|webm|mov|docx?|xlsx?|pptx?|css|js|html?|php';
+
+	/**
+	 * #1424 trace of this request's bridge calls. Operator-only. What it carries: the op, a key SHAPE (file names, dates
+	 * and directory names replaced by placeholders), ms, a repeat count, and up to 5 callers per call as
+	 * Class::function@file-base-name.php:line. Callers name the plugin or theme class, function and file base name that
+	 * made the call (never arguments or paths), so a trace tells which plugin touches R2. It is returned only in
+	 * x-r2-trace with a valid spike token and is never logged. Only with the operator header (index.js passes it only with the spike token). */
 	private static $trace        = array();
 	private static $trace_seen   = array();
 	private static $trace_cached = 0;
@@ -76,8 +84,9 @@ class R2_Uploads_Stream {
 			} elseif ( preg_match( '/^\d{2}$/', $p ) ) {
 				$out[] = '<mm>';
 			} elseif ( $i === $last && '' === $trail ) {
-				$ext   = ( preg_match( '/\.([A-Za-z0-9]{1,5})$/', $p, $m ) ) ? '.' . strtolower( $m[1] ) : '';
-				$size  = preg_match( '/-\d+x\d+\.[A-Za-z0-9]{1,5}$/', $p ) ? '-<w>x<h>' : '';
+				// Only a known file type stays: "report.2026" or "john.smith" end in a name, not an extension.
+				$ext   = ( preg_match( '/\.(' . self::TRACE_EXT . ')$/i', $p, $m ) ) ? '.' . strtolower( $m[1] ) : '';
+				$size  = ( '' !== $ext && preg_match( '/-\d+x\d+\.(' . self::TRACE_EXT . ')$/i', $p ) ) ? '-<w>x<h>' : '';
 				$out[] = '<file>' . $size . $ext;
 			} else {
 				$out[] = '<dir>';

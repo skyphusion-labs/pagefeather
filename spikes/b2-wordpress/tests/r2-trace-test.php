@@ -7,7 +7,7 @@
 $case = getenv( 'PF_CASE' );
 if ( false === $case || '' === $case ) {
 	$fail = 0;
-	foreach ( array( 'off', 'on' ) as $c ) {
+	foreach ( array( 'off', 'zero', 'empty', 'on' ) as $c ) {
 		echo "== case: $c ==\n";
 		passthru( 'PF_CASE=' . $c . ' ' . escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ), $code );
 		if ( 0 !== $code ) {
@@ -31,6 +31,17 @@ function check( $label, $got, $want ) {
 
 if ( 'on' === $case ) {
 	$_SERVER['HTTP_X_PF_R2_TRACE'] = '1';
+} elseif ( 'zero' === $case ) {
+	$_SERVER['HTTP_X_PF_R2_TRACE'] = '0';
+} elseif ( 'empty' === $case ) {
+	$_SERVER['HTTP_X_PF_R2_TRACE'] = '';
+}
+function pf_prop( $name ) {
+	$r = new ReflectionProperty( 'R2_Uploads_Stream', $name );
+	if ( PHP_VERSION_ID < 80100 ) {
+		$r->setAccessible( true );
+	}
+	return $r;
 }
 $GLOBALS['sent'] = array();
 function post_message_to_js( $json ) {
@@ -68,11 +79,31 @@ function pf_probe_caller_one() {
 }
 pf_probe_caller_one();
 
-if ( 'off' === $case ) {
+if ( 'on' !== $case ) {
+	// Off (no header, '0', ''): nothing is RECORDED, not only nothing sent.
+	check( "$case: nothing recorded", array( pf_prop( 'trace' )->getValue(), pf_prop( 'trace_total' )->getValue(), pf_prop( 'trace_cached' )->getValue(), pf_prop( 'trace_seen' )->getValue() ), array( array(), 0, 0, array() ) );
+	// The flush gate on its own: even with an entry planted, a request without the header sends nothing.
+	pf_prop( 'trace' )->setValue( null, array( array( 'o' => 'head', 'k' => 'x', 'ms' => 1, 'd' => 0, 'c' => array() ) ) );
 	R2_Uploads_Stream::trace_flush();
-	check( 'no header: nothing is sent to the Worker', $GLOBALS['sent'], array() );
-	check( 'no header: the calls still worked', $GLOBALS['pf_store']['uploads/2026/11/secret-name.png'], 'z' );
+	check( "$case: the flush gate alone sends nothing", $GLOBALS['sent'], array() );
+	check( "$case: the calls still worked", $GLOBALS['pf_store']['uploads/2026/11/secret-name.png'], 'z' );
 	exit( $fail ? 1 : 0 );
+}
+
+// key_shape table: file names, dates and dotted names never survive; only a known file type stays.
+foreach ( array(
+	'uploads/2026/11/photo.JPG'             => 'uploads/<yyyy>/<mm>/<file>.jpg',
+	'uploads/2026/11/photo-150x150.webp'    => 'uploads/<yyyy>/<mm>/<file>-<w>x<h>.webp',
+	'uploads/2026/11/report.2026'           => 'uploads/<yyyy>/<mm>/<file>',
+	'uploads/2026/11/john.smith'            => 'uploads/<yyyy>/<mm>/<file>',
+	'uploads/2026/11/john.smith.pdf'        => 'uploads/<yyyy>/<mm>/<file>.pdf',
+	'uploads/2026/11/a-300x200.smith'       => 'uploads/<yyyy>/<mm>/<file>',
+	'uploads/woocommerce_uploads/inv.zip'   => 'uploads/<dir>/<file>.zip',
+	'uploads/2026/11/'                      => 'uploads/<yyyy>/<mm>/',
+	'uploads'                               => 'uploads',
+	'other/secret/dir.name/'                => '<dir>/<dir>/<dir>/',
+) as $in => $want ) {
+	check( "key_shape $in", R2_Uploads_Stream::key_shape( $in ), $want );
 }
 
 R2_Uploads_Stream::trace_flush();

@@ -34,3 +34,11 @@ test('PHP records only on the operator header, and only the bridge call (not a c
 	assert.ok(php.includes("! empty( $_SERVER['HTTP_X_PF_R2_TRACE'] )"));
 	assert.ok(php.includes("array( 'r2Trace' => "));
 });
+
+test('the trace is set on exactly one response header, and never logged', () => {
+	assert.equal(src.split("out.set('x-r2-trace'").length - 1, 1);
+	for (const line of src.split('\n')) if (/console\.(log|error|warn|info)/.test(line)) assert.ok(!/r2Trace|R2Trace|r2-trace/.test(line), 'the trace is logged: ' + line.trim());
+});
+test('PHP trace gate is the header with a truthy value (0 and empty are off)', () => {
+	assert.ok(php.includes("! empty( $_SERVER['HTTP_X_PF_R2_TRACE'] )"));
+});
