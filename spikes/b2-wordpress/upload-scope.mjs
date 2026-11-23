@@ -11,6 +11,8 @@ export async function serveUpload(req, env, url) {
 	}
 	// R2 keys are at most 1,024 bytes. A longer path cannot exist.
 	if (new TextEncoder().encode(key).length > 1024) return new Response('not found', { status: 404 });
+	// A folder a stock install's web server refuses (deny from all) is refused here too, before R2 is read.
+	if (protectedUploadKey(key)) return new Response('forbidden', { status: 403 });
 	let o;
 	try {
 		o = await env.MEDIA.get(key, { onlyIf: req.headers, range: req.headers });
@@ -41,8 +43,16 @@ export async function serveUpload(req, env, url) {
 
 // The upload folders a stock install refuses to the web: WooCommerce writes "deny from all" into each one
 // (class-wc-install.php for woocommerce_uploads, Logging/Settings.php for wc-logs, TransientFilesEngine.php for
-// woocommerce_transient_files). An empty set here = no refusal yet (the red step).
-export const PROTECTED_UPLOAD_DIRS = new Set();
+// woocommerce_transient_files). Stock serves woocommerce_uploads only through WooCommerce's download handler, after its
+// purchase check, and transient files only through /wc/file/transient/. Here those reads go through PHP and the R2
+// bridge, never this route, so refusing the route keeps them working. (WooCommerce's "redirect" download method sends
+// the buyer to the file URL itself; on stock that writes no deny rule, and here it is refused: use "force".)
+export const PROTECTED_UPLOAD_DIRS = new Set(['woocommerce_uploads', 'wc-logs', 'woocommerce_transient_files']);
+// key is serveUpload's R2 key, 'uploads/' + the decoded path. The first real folder under uploads/ decides: empty and
+// '.' segments are skipped (a doubled slash or ./ must not dodge it), and the name is compared without case.
 export function protectedUploadKey(key) {
-	return false;
+	const parts = String(key).split('/');
+	if (parts[0] !== 'uploads') return false;
+	const first = parts.slice(1).find((seg) => seg !== '' && seg !== '.');
+	return first !== undefined && PROTECTED_UPLOAD_DIRS.has(first.toLowerCase());
 }
