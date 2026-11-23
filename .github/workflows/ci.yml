@@ -480,6 +480,9 @@ jobs:
       - name: x-pf-probe links one request's events at the gateway, Pages and PHP (issue #1328)
         # probe-trace.mjs: one m: probe-trace line per entrypoint for a valid id; no line and one header read on normal traffic.
         run: node --test spikes/b2-wordpress/tests/probe-trace.test.mjs
+      - name: A busy answer for a request that misses a stored page copy is a 429, never the stale copy (issue #1328)
+        # page-copy.mjs: the cache conditions in one place (shape, route, store side); busyAnswerFor at the gateway.
+        run: node --test spikes/b2-wordpress/tests/page-copy.test.mjs
       - name: a REST GET's JSON body reaches PHP, as on stock (issue #1344)
         # request-body.mjs phpRequestBody and index.js handle(): a GET with a body sends it, an empty GET sends none,
         # HEAD never does, every other method is unchanged.

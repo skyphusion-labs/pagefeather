@@ -27,7 +27,8 @@ for (const ep of ['/_build', '/_evict']) {
 	ok(`${ep} is handled after a spike-token gate`, at >= 0 && gate >= 0 && at > gate);
 }
 // PAGE_CACHE_NO_PATH must exclude /_ paths.
-const m = src.match(/const PAGE_CACHE_NO_PATH = (\/\^[^;]+\/);/);
+// #1328: the page-cache conditions moved to page-copy.mjs.
+const m = readFileSync(new URL('../page-copy.mjs', import.meta.url), 'utf8').match(/export const PAGE_CACHE_NO_PATH = (\/\^[^;]+\/);/);
 ok('PAGE_CACHE_NO_PATH is found', !!m);
 if (m) {
 	const re = eval(m[1]);

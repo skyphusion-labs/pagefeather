@@ -71,6 +71,7 @@ import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
 import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, selfFetchOutcome, SELF_FETCH_OBJECT, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE, SELF_CACHE_ONLY_HEADER, SELF_CACHE_MISS_HEADER, selfCacheMissResponse, httpErrorReply } from './self-fetch.mjs';
 import { probeTrace } from './probe-trace.mjs';
+import { pageCacheRoute, storeRequestSide, busyAnswerFor } from './page-copy.mjs';
 import { phpRequestBody } from './request-body.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
@@ -2417,47 +2418,17 @@ function kickPurge(ctx) {
 	if (gatewayPurger && ctx && ctx.exports && gatewayPurger.state().pending) gatewayPurger.kick(purgeCtx(ctx));
 }
 
-// Page cache (Workers Cache, issue #63). Only the Pages entrypoint is cached.
-// The default entrypoint (the gateway, not cached) sends it a GET or HEAD that
-// has no WordPress cookie (WP_COOKIE, by name) and is not an admin, login,
-// cron or spike path, WITHOUT the Cookie header. So the cache key is the path
-// and the query alone, and a cookie that is not WordPress's (analytics _ga,
-// WooCommerce order attribution sbjs_*) does not split it. Before #63 the
-// default entrypoint was cached with Vary: Cookie, keyed on the whole Cookie
-// header: every visitor with any such cookie was a separate variant (measured
-// on wp-perf-dosql, docs/approach-b.md 8c).
-const WP_COOKIE = /(^|;\s*)(wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|wp-settings-|woocommerce_|wp_woocommerce_session_)/;
-const PAGE_CACHE_NO_PATH = /^\/(wp-admin|wp-login\.php|wp-json|wp-cron\.php|wp-comments-post\.php|cart|checkout|my-account|wc-api|skyphusion-invoice|_)/;
-const PAGE_CACHE_NO_PARAM = ['rest_route', 'wc-ajax', 'add-to-cart', 'preview', 'nocache', 'customize_changeset_uuid', 'wc-api'];
-function pageCacheRoute(req, url, env) {
-	return (
-		Number(env.PAGE_CACHE_TTL || 120) > 0 &&
-		(req.method === 'GET' || req.method === 'HEAD') &&
-		!WP_COOKIE.test(req.headers.get('cookie') || '') &&
-		!req.headers.get('upgrade') &&
-		!PAGE_CACHE_NO_PATH.test(url.pathname) &&
-		!PAGE_CACHE_NO_PARAM.some((k) => url.searchParams.has(k)) &&
-		!req.headers.has('authorization') &&
-		// An operator request never goes to the cached entrypoint (perf-headers.mjs).
-		!isOperatorRequest(req) &&
-		// #1277 probe: its direct and render arms render in the gateway's own (placed) fetch handler.
-		!['direct', 'render', 'object', 'object-new'].includes(probeArm(req, env))
-	);
-}
+// Page cache (Workers Cache, issue #63): the request conditions (what can be stored, what goes to the cached Pages
+// entrypoint, the store decision's request side) live in page-copy.mjs, the one copy of them (#1328).
 function pageCacheHeaders(req, url, r, out, env, failed = 0) {
 	const ttl = Number(env.PAGE_CACHE_TTL || 120);
 	const wpCc = String([].concat(r.headers['cache-control'] || []).join(','));
 	const cacheable =
-		ttl > 0 &&
+		storeRequestSide(req, url, env) && // page-copy.mjs: a GET or HEAD, the cache on, no excluded path or param, no WP cookie or authorization
 		failed === 0 && // #766: an answer made while a statement failed (a read that came back empty) is never stored
-		(req.method === 'GET' || req.method === 'HEAD') &&
 		[200, 301, 404].includes(r.httpStatusCode) &&
-		!WP_COOKIE.test(req.headers.get('cookie') || '') &&
 		!r.headers['set-cookie'] &&
-		!/no-cache|no-store|private/i.test(wpCc) &&
-		!PAGE_CACHE_NO_PATH.test(url.pathname) &&
-		!PAGE_CACHE_NO_PARAM.some((k) => url.searchParams.has(k)) &&
-		!req.headers.has('authorization');
+		!/no-cache|no-store|private/i.test(wpCc);
 	// #628 C2: edge-cache.php marks product, shop and category pages for the Worker only. The mark
 	// never leaves, cached or not (page-cache-ttl.mjs).
 	out.delete(PRODUCT_PAGE_HEADER);
@@ -4562,7 +4533,9 @@ const site = {
 	// may see them (perf-headers.mjs), whichever branch of serve() built the response.
 	async fetch(req, env, ctx) {
 		// Never store operator responses at the edge (perf-headers.mjs operatorNoStore).
-		return operatorNoStore(scrubPerfHeaders(await this.serve(req, env, ctx), perfHeadersAllowed(req, env)), req);
+		// #1328: a busy 503 for a request that misses a stored copy (a WP cookie on a cacheable URL) is a 429, or the edge
+		// would serve that copy STALE in its place (page-copy.mjs busyAnswerFor).
+		return operatorNoStore(scrubPerfHeaders(busyAnswerFor(req, new URL(req.url), env, await this.serve(req, env, ctx)), perfHeadersAllowed(req, env)), req);
 	},
 	async serve(req, env, ctx) {
 		ENV = env;

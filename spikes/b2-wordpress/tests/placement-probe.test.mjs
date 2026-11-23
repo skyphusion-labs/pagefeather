@@ -44,7 +44,7 @@ test('#1277 index.js wires it: gateway renders direct/render arms before the pag
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	const gw = src.slice(src.indexOf('export default {'));
 	assert.ok(gw.indexOf('probeArm(req, env)') > 0 && gw.indexOf('probeArm(req, env)') < gw.indexOf('if (pageCacheRoute(req, url, env)) {'), 'the gateway checks the probe before the page cache');
-	const route = src.slice(src.indexOf('function pageCacheRoute(req, url, env) {'), src.indexOf('function pageCacheHeaders('));
+	const route = readFileSync(new URL('../page-copy.mjs', import.meta.url), 'utf8').replace(/^[\s\S]*?export function pageCacheRoute\(/, 'function pageCacheRoute(').replace(/export function storeRequestSide[\s\S]*$/, '');
 	assert.match(route, /!\['direct', 'render', 'object', 'object-new'\]\.includes\(probeArm\(req, env\)\)/, 'direct, render and the object arms never go to the page cache');
 	assert.match(gw, /if \(probeColo\) \{[\s\S]{0,200}noStoreAnywhere\(pout\.headers\)/, 'a gateway probe answer is never stored');
 	const pages = src.slice(src.indexOf('export class Pages extends WorkerEntrypoint {'), src.indexOf('export default {'));
@@ -72,7 +72,7 @@ test('#1277 probeObjectName: a probe-only name, never a pool name, sanitised', (
 });
 test('#1277 index.js wires the object arms: forwarded with the pool hint before the overflow decision; the object traces once', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	const route = src.slice(src.indexOf('function pageCacheRoute(req, url, env) {'), src.indexOf('function pageCacheHeaders('));
+	const route = readFileSync(new URL('../page-copy.mjs', import.meta.url), 'utf8').replace(/^[\s\S]*?export function pageCacheRoute\(/, 'function pageCacheRoute(').replace(/export function storeRequestSide[\s\S]*$/, '');
 	assert.match(route, /!\['direct', 'render', 'object', 'object-new'\]\.includes\(probeArm\(req, env\)\)/, 'object arms never go to the page cache');
 	const ovAt = src.indexOf('const ovs = overflowSettings(env);');
 	const fwd = src.indexOf("return toPhpObject(req, env, url, ctx, { name: objProbe === 'object' ? overflowName(0) : probeObjectName(env), hint: ovs.hint, overflow: true, callId: crypto.randomUUID() });");
