@@ -8,4 +8,15 @@ set -euo pipefail
 TOOLS=$(cd "$(dirname "${BASH_SOURCE[0]}")/tools" && pwd)
 BIN="$TOOLS/node_modules/.bin/wrangler"
 [ -x "$BIN" ] || (cd "$TOOLS" && npm ci --silent >&2)
+# #1410: a deploy of a config with Workers Logs on resets their query-string redaction to false (the
+# pinned wrangler has no config key for it), and a store's query strings hold order keys and logins.
+# So after every successful deploy, re-apply it and read it back, or turn the logs off and fail
+# loudly (obs_settings.py after-deploy). This is the one wrangler every path calls, a hand-run one too.
+if [ "${1:-}" = deploy ]; then
+  rc=0; "$BIN" "$@" || rc=$?
+  [ "$rc" = 0 ] || exit "$rc"
+  shift
+  python3 -I "$(dirname "${BASH_SOURCE[0]}")/wfp/obs_settings.py" after-deploy "$@"
+  exit $?
+fi
 exec "$BIN" "$@"
