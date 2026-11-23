@@ -68,6 +68,8 @@ cat > "$T/wrangler" <<'SH'
 #!/bin/bash
 # A stand-in wrangler: logs the build id each deploy uploads; FAIL_DEPLOY=1 fails it.
 echo "deploy $(sed -n 's/export default "\(.*\)";/\1/p' build/build-id.js) $(head -1 index.js)" >> "$WRLOG"
+# #1385: keep a copy of the config this upload used, numbered in upload order.
+prev=""; for a in "$@"; do [ "$prev" = --config ] && cp "$a" "$WRLOG.cfg.$(wc -l < "$WRLOG" | tr -d ' ')"; prev=$a; done
 [ "${FAIL_DEPLOY:-0}" = 1 ] && { echo "upload refused" >&2; exit 1; }
 exit 0
 SH
@@ -101,7 +103,9 @@ use_recorded_inputs() { return 0; }
 store_api_code() { echo 404; }
 update_inputs_check() { return 0; }
 tree_clean_check() { return 0; }
-render_user() { echo "name = \"site-$1\""; }
+render_user() { # #1385: the [vars] the stand-in renders: the settings this run holds, as the real render does
+  echo "name = \"site-$1\""; echo "[vars]"; echo "BUILD_ID = \"x\""
+  local k; for k in MAIL_FROM OBJECT_CALL_DEADLINE_S FAULT_INJECT; do [ -n "${!k:-}" ] && echo "$k = \"${!k}\""; done; return 0; }
 config_hash() { echo h-new; }
 search_on() { return 1; }
 bundle_size_check() { return 0; }
@@ -109,7 +113,8 @@ wait_build() { return 0; }
 curl() { printf 200; }   # the front page check; the S3 calls run the real curl (a subprocess)
 record_build_inputs() { return 0; }
 # #558: the settings record and the live drop check (config-hash-test.sh covers them).
-keep_settings() { SETTINGS_RECORDED=1; return 0; }; settings_dropcheck() { return 0; }; record_settings() { return 0; }
+keep_settings() { SETTINGS_RECORDED=1; [ -n "${REC_SETTINGS:-}" ] || return 0; printf '%s' "$REC_SETTINGS" > "$2/settings.json"
+  local m; m=$(python3 -I "$WFP/site_settings.py" merge "$2/settings.json" 2>/dev/null) || return 2; eval "$m"; }; settings_dropcheck() { return 0; }; record_settings() { return 0; }
 # The build stand-in: the new build of site B.
 build_dosql() { [ "${FAIL_BUILD:-0}" = 1 ] && return 1; setid dddddddddddd-wooprimed; }
 # The temp dirs of the update cases go under $TT, so the test can see that none is left (#513:
@@ -119,7 +124,7 @@ build_dosql() { [ "${FAIL_BUILD:-0}" = 1 ] && return 1; setid dddddddddddd-woopr
 # covers WDIR only.
 TT=$T/tmp; mkdir -p "$TT"
 run_update() { # run_update <id build/ holds at the start> [env...]
-  setid "$1"; shift; : > "$WRLOG"
+  setid "$1"; shift; : > "$WRLOG"; rm -f "$WRLOG".cfg.*   # #1385: no config copy outlives its case
   ( export TMPDIR=$TT; APP=$FA; WDIR=$(mktemp -d "$TT/wdir.XXXXXX"); export NO_SNAPSHOT=1 "$@"; rc=0; update_one_inner siteb || rc=$?
     rm -rf "$WDIR"; echo "rc=$rc" ) > "$T/out" 2>&1   # as update_one removes its work dir
 }
@@ -216,6 +221,28 @@ check "site restore: no hold and no key: refused (2)" "$(grep -c '^rc=2$' "$T/rs
 # update --all keeps the failed site's code: 3 reaches the caller.
 three() { [ "$1" = b ] && return 3; return 0; }
 update_all three a b c > "$T/ua.out" 2>&1; check "update --all returns the failed site's code (3) and stops there" "$?:$(grep -c 'not reached: c' "$T/ua.out")" "3:1"
+# #1385: a rolled-back update re-deploys the RECORDED settings, never this run's. Before the fix the rollback
+# uploaded this run's config (wrangler.rollback.toml was a copy of it), so a setting that broke the update stayed
+# live while the record went back, and the next DROP_SETTINGS saw "nothing to do" (cf759a, 2026-11-23).
+REC='{"v": 1, "settings": {"MAIL_FROM": "wp@example.com"}, "secrets": []}'
+run_update "$LIVE_B" FORCE_FAIL=verify BKT=c1385 REC_SETTINGS="$REC" OBJECT_CALL_DEADLINE_S=1
+check "#1385: a new setting, the verify fails: the update fails and rolls back" "$(grep -c '^rc=1$' "$T/out"):$(tail -1 "$WRLOG")" "1:deploy $LIVE_B // current tree"
+check "  the new build's upload carried the new setting" "$(grep -c '^OBJECT_CALL_DEADLINE_S = "1"$' "$WRLOG.cfg.1")" 1
+check "  the ROLLBACK upload does not carry it" "$(grep -c '^OBJECT_CALL_DEADLINE_S' "$WRLOG.cfg.2")" 0
+check "  the rollback keeps the recorded setting" "$(grep -c '^MAIL_FROM = "wp@example.com"$' "$WRLOG.cfg.2")" 1
+check "  the log names the setting it restored" "$(grep -c 'rollback: OBJECT_CALL_DEADLINE_S restored to the recorded value (not set)' "$T/out")" 1
+check "  no secret value is in the rollback config (the spike token, the salt)" "$(grep -c 'SECRET-SPIKE-TOKEN\|"s"$' "$WRLOG.cfg.2")" 0
+run_update "$LIVE_B" FORCE_FAIL=verify BKT=c1385b REC_SETTINGS="$REC" MAIL_FROM=new@example.com
+check "#1385: a changed setting: the rollback upload has the recorded value" "$(grep -c '^MAIL_FROM = "wp@example.com"$' "$WRLOG.cfg.2"):$(grep -c 'new@example.com' "$WRLOG.cfg.2")" "1:0"
+run_update "$LIVE_B" FORCE_FAIL=verify BKT=c1385c REC_SETTINGS="$REC" THROWAWAY=1 FAULT_INJECT=after-insert
+check "#1385: a measurement flag: the new build's upload carried it (the case is real)" "$(grep -c '^FAULT_INJECT = "after-insert"$' "$WRLOG.cfg.1" 2>/dev/null)" 1
+check "  the rollback upload exists and does not carry it (never recorded, so never kept)" "$([ -s "$WRLOG.cfg.2" ] && echo up):$(grep -c '^FAULT_INJECT' "$WRLOG.cfg.2" 2>/dev/null)" "up:0"
+# A setting the rollback cannot put back (the record has it, this run's config does not render it): it says so, loudly.
+run_update "$LIVE_B" FORCE_FAIL=verify BKT=c1385d REC_SETTINGS='{"v": 1, "settings": {"MAIL_FROM": "wp@example.com", "PHP_INI": "memory_limit=96M"}, "secrets": []}' PHP_INI=memory_limit=64M
+check "#1385: a setting the rollback cannot restore: the update fails, and the log names it" "$(grep -c '^rc=1$' "$T/out"):$(grep -c 'ROLLBACK LEFT A SETTING LIVE: PHP_INI' "$T/out")" "1:1"
+# No record at all (a site from before #558): the rollback says it keeps this run's settings.
+run_update "$LIVE_B" FORCE_FAIL=verify BKT=c1385e OBJECT_CALL_DEADLINE_S=1
+check "#1385: no recorded settings: the log says the rollback could not restore them, and names this run's" "$(grep -c 'ROLLBACK LEFT A SETTING LIVE: OBJECT_CALL_DEADLINE_S' "$T/out")" 1
 # #513: no update case leaves a temp dir behind (the saved build, the rollback mirror, the work dirs).
 check "every update case removed its temp dirs" "$(find "$TT" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" 0
 echo "$fails failing check(s)"
