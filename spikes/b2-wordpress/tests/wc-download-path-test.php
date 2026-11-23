@@ -110,5 +110,10 @@ $GLOBALS['pf_store']['_build/inputs.json'] = 'SECRET';
 $p = wc_parse_file_path( $SITE . '/wp-content/uploads/../../_build/inputs.json' );
 check( 'climb: not mapped to a key outside uploads', is_string( $p['file_path'] ) && false !== strpos( $p['file_path'], '_build' ) && ( $h = @fopen( $p['file_path'], 'rb' ) ) && 'SECRET' === stream_get_contents( $h ), false );
 
+// 5. Even if a key with a literal ".." existed in R2, a ".." path is never mapped (the guard, not R2's literal keys).
+$GLOBALS['pf_store']['uploads/../../_build/inputs.json'] = 'SECRET2';
+$p = wc_parse_file_path( $SITE . '/wp-content/uploads/../../_build/inputs.json' );
+check( 'climb with a literal key present: still not mapped to r2', 0 === strpos( (string) $p['file_path'], 'r2://' ), false );
+
 echo $fail ? "\n$fail CHECK(S) FAILED\n" : "\nALL CHECKS PASS\n";
 exit( $fail ? 1 : 0 );
