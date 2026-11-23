@@ -260,6 +260,14 @@ class Site(BaseHTTPRequestHandler):
                 ok = pw is not None and pw in st.get("live_app_pws", ())
                 return self._json(200 if ok else 401, {"ok": ok})
             return self._json(200 if auth.startswith("Basic ") else 403, {"ok": True})
+        if route == "/pf-conformance/v1/reset-global-styles":
+            # #1401: the marker's reset route. gs_missing: an older marker without it (404); gs_reply: what it reports.
+            st.setdefault("routes", []).append((method, route))
+            if st.get("gs_missing"):
+                return self._json(404, {"code": "rest_no_route"})
+            if method != "POST":
+                return self._json(404, {"code": "rest_no_route"})
+            return self._json(200, st.get("gs_reply") or {"reset": True, "posts": 1, "revisions": 44, "left_posts": 0, "left_revisions": 0})
         if route:
             st.setdefault("routes", []).append((method, route))
         if st.get("store_pages") and method == "GET" and path in ("/shop/", "/cart/", "/checkout/", "/my-account/"):
@@ -725,5 +733,29 @@ check("wc_public_page_ok: cart 404", _seed.wc_public_page_ok("cart", 404, "") is
 check("wc_public_page_ok: empty checkout redirects to cart", _seed.wc_public_page_ok("checkout", 302, "https://ex/cart/") is True)
 check("wc_public_page_ok: checkout redirect home is not the store", _seed.wc_public_page_ok("checkout", 302, "https://ex/") is False)
 check("wc_public_page_ok: checkout 200", _seed.wc_public_page_ok("checkout", 200, "") is True)
+
+# #1401: SEED_RESET_GLOBAL_STYLES=1 resets the user global styles (and their revisions) through the marker's route.
+GS = "/pf-conformance/v1/reset-global-styles"
+GS_CHECK = "global styles reset (SEED_RESET_GLOBAL_STYLES, pf-conformance/v1/reset-global-styles): 0 posts and 0 revisions left"
+gs_posts = lambda st: [r for r in st.get("routes", []) if r == ("POST", GS)]
+p, state, report = run_email_editor_seed({"SEED_RESET_GLOBAL_STYLES": "1"})
+gsr = (report or {}).get("global_styles_reset") or {}
+check("#1401 SEED_RESET_GLOBAL_STYLES=1 on a marked throwaway: one POST to the reset route, checked ok, recorded",
+      GS_CHECK not in ((report or {}).get("failed") or []) and len(gs_posts(state)) == 1 and ((report or {}).get("checks") or {}).get(GS_CHECK, {}).get("ok") is True
+      and gsr.get("status") == 200 and gsr.get("revisions") == 44 and gsr.get("left_revisions") == 0, (p.returncode, gs_posts(state), gsr, p.stderr[-300:]))
+p, state, report = run_email_editor_seed({"SEED_RESET_GLOBAL_STYLES": "1"}, gs_reply={"reset": True, "posts": 0, "revisions": 5, "left_posts": 1, "left_revisions": 5})
+check("#1401 a reset that leaves a post or a revision behind fails the seed",
+      GS_CHECK in ((report or {}).get("failed") or []), (p.returncode, (report or {}).get("failed")))
+p, state, report = run_email_editor_seed({"SEED_RESET_GLOBAL_STYLES": "1"}, gs_missing=True)
+failed = (report or {}).get("failed") or []
+check("#1401 a marker without the reset route (404) fails, naming the redeploy",
+      any("has no reset-global-styles route" in f and "redeploy" in f for f in failed), (p.returncode, failed))
+p, state, report = run_email_editor_seed()
+check("#1401 without SEED_RESET_GLOBAL_STYLES: the route is never called, and seed.json has no global_styles_reset",
+      not [r for r in state.get("routes", []) if r[1] == GS] and "global_styles_reset" not in (report or {}), (p.returncode, state.get("routes")))
+p, state, report = run_email_editor_seed({"SEED_RESET_GLOBAL_STYLES": "1", "SEED_ALLOW_LOCAL": "1"}, no_marker=True)
+check("#1401 SEED_RESET_GLOBAL_STYLES=1 on a local site with no marker: refused (exit 2), the route never called",
+      p.returncode == 2 and "SEED_RESET_GLOBAL_STYLES=1 needs the throwaway marker" in p.stderr and not [r for r in state.get("routes", []) if r[1] == GS],
+      (p.returncode, p.stderr[-200:], state.get("routes")))
 print("%d failing" % len(fails))
 sys.exit(1 if fails else 0)
