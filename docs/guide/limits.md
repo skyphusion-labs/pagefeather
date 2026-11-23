@@ -143,6 +143,20 @@ So whichever answers first wins. On stock WordPress on a local server, the tag c
 
 **What to do:** after you add a new tag, wait until the editor has finished saving it (about a second) before you click Publish. Or check the Tags box after the first save, and save again if the tag is missing. Tags that already exist are not affected: their ids are known at once.
 
+## Two upstream block-bindings image tests race the image load (#1400)
+
+**What this is:** two Gutenberg end-to-end tests are excluded from our runs. They test the test, not the site: no editor behaviour you can see is wrong. They are "Registered sources > getValues > should show the returned values in image attributes" and "... setValues > should be possible to edit the value of the text custom field from the image alt", in `custom-sources.spec.js`. The block binding itself works on our sites: the bound values reach the image every time.
+
+**Why they fail:** each test inserts an Image block whose image is a fresh upload, then clicks the `<img>` with `force: true` ([L231](https://github.com/WordPress/gutenberg/blob/89408c2b9bd944575dfa9039bc6870da1c8f56cb/test/e2e/specs/editor/various/block-bindings/custom-sources.spec.js#L223-L231), [L1011](https://github.com/WordPress/gutenberg/blob/89408c2b9bd944575dfa9039bc6870da1c8f56cb/test/e2e/specs/editor/various/block-bindings/custom-sources.spec.js#L1003-L1011)). `force` skips Playwright's wait for the element to be visible. Until the image arrives, the `<img>` has `height: auto` and no height, so the click fails at once: "Element is outside of the viewport". On stock WordPress on a local server, the image arrives in a few milliseconds, before the click. On our sites it takes 142 to 219 ms (#1400), and the click starts about 40 ms after the image is requested.
+
+**Measured:**
+- On `cf759hw` (approach A) and `cf759a` (WfP built-in database), both tests failed 8 of 8, always with that error. The traces show each click starting while its image GET was in flight ([evidence](https://github.com/skyphusion-labs/pagefeather/issues/1400#issuecomment-7110538766)).
+- **The control on stock:** stock WordPress 7.1.5 in wp-env, with a proxy that delays only `/wp-content/uploads/*`. Both tests passed 6 of 6 at 0 ms, 4 of 6 at 150 ms, and **0 of 6 at 250 ms and at 400 ms**, every failure the same error ([the rule](https://github.com/skyphusion-labs/pagefeather/issues/1400#issuecomment-7111624141), [the reading](https://github.com/skyphusion-labs/pagefeather/issues/1400#issuecomment-7112225805)).
+
+So any host whose uploads take about 150 ms or more fails these two tests, stock WordPress included.
+
+**The engine lever:** #1418. On approach A, every uploads GET crosses to the placed entrypoint and is not stored at the edge. Shortening that would make every image faster for real visitors and editors. It would not reliably get a first image under 40 ms, so the exclusion stays.
+
 ## Permalinks: a structure saved with /index.php stays until you re-save it (#1345)
 
 Before #1345, WordPress on this engine believed that URL rewriting was not available. So Settings, Permalinks offered every structure with an `/index.php` prefix: choosing "Post name" saved `/index.php/%postname%/`, not `/%postname%/`. The engine has always sent every path that is not a file to `index.php`, so pretty permalinks without `/index.php` do work. Since #1345, the screen offers them, as on a stock Apache or nginx host.
