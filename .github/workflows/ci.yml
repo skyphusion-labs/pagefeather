@@ -671,6 +671,10 @@ jobs:
         # A lock with one platform's h1 hash is rewritten by terraform init on another platform, so the clone is dirty and
         # every build is stamped -dirty. terraform providers lock for linux and darwin, amd64 and arm64, must add nothing.
         run: deploy/tests/tf-lock-platforms-test.sh
+      - name: deploy/box throwaway box tool (issue #1327)
+        # No credential in the user-data (refused, plain or base64); the one-shot creds pass only on a 404 read-back and FAIL
+        # when the object is left in place; teardown reads back; the SigV4 presigning matches AWS's published example.
+        run: python3 -I deploy/box/tests/box-test.py
       - name: fixtures terraform root leaves the clone clean
         # tests/fixtures/terraform: every Terraform artifact is ignored and the lock file is tracked. The init half runs where terraform exists (not on the runner).
         run: tests/fixtures/tests/tf-clean-test.sh
