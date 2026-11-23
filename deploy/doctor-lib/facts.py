@@ -41,7 +41,7 @@ SIGNALS = (
     # (m value, field to split by or None, the header it matches, what the line means)
     ("isolate-reset", "kind", "x-isolate-reset", "a request died in a platform reset (memory or storage) and got a 503 or a write-loss answer"),
     ("isolate-reset-retry", "kind", "x-isolate-retry", "a GET or HEAD died in a reset and was sent once more"),
-    ("overloaded", None, "x-overloaded", "the Durable Object queue was full and the request got a 503"),
+    ("overloaded", None, "x-overloaded", "the Durable Object queue was full and the request got a 503 (a 429 for a logged-in or cart page request, #1328)"),
     ("write-loss", None, "x-write-loss", "a write may have been saved before a reset; the user was told to check before a retry"),
     ("php-lock", "event", "x-php-lock / x-php-overflow / x-object-deadline", "requests waited for the one PHP runtime (queued, granted, shed, stale, overflow); a shed past its start-by answered x-object-deadline: queued and never ran (#708)"),
     ("object-deadline", "answered", "x-object-deadline", "a PHP object did not answer in time (#703); a 500 may have saved (x-write-loss: unknown), a 503 was a safe method"),

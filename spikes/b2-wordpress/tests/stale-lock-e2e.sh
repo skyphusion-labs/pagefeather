@@ -1,8 +1,8 @@
 #!/bin/bash
 # #1060: a stuck PHP run must never get a second runtime booted beside it; the requests queued behind it shed with a
-# retryable 503 instead. On WordPress in local workerd (dosql-local), with the fixture pf1060-hang.php:
+# retryable busy answer instead (503, or 429 for an operator or cookie request, #1328). On WordPress in local workerd (dosql-local), with the fixture pf1060-hang.php:
 #   1. A holds the PHP lock on a request that stalls (an HTTP call to a local server that never answers);
-#   2. B, C and D queue behind it. Past 60 s (the stale line) with no progress, each answers 503, and NO new runtime
+#   2. B, C and D queue behind it. Past 60 s (the stale line) with no progress, each answers the busy answer (x-php-lock: shed), and NO new runtime
 #      boots (no boot line after A's). Red before #1060: the first stale waiter booted a new runtime and ran beside A;
 #   3. after A ends, a request answers 200 again.
 #   tests/stale-lock-e2e.sh   (in spikes/b2-wordpress, after prepare.sh and build.sh; saves and restores build/)
@@ -32,7 +32,7 @@ curl -sf -m 300 -H "x-spike-token: $TOK" -X POST -H "x-admin-password: $PW" "$B/
 curl -s -m 60 -o /dev/null -H "x-spike-token: $TOK" "$B/?pf1060=ok" # the runtime is booted and warm
 boots0=$(grep -c '"m":"boot"' dev.log)
 OUT=$STATE/out; mkdir -p "$OUT"
-probe() { curl -s -m 200 -o "$OUT/$1.body" -w '%{http_code} %{time_total}' -H "x-spike-token: $TOK" "$B/$2" > "$OUT/$1.st"; }
+probe() { curl -s -m 200 -o "$OUT/$1.body" -D "$OUT/$1.hdr" -w '%{http_code} %{time_total}' -H "x-spike-token: $TOK" "$B/$2" > "$OUT/$1.st"; }
 probe A "?pf1060=hang&port=$HANG_PORT" &
 sleep 2
 for n in B C D; do probe $n "?pf1060=ok&n=$n" & sleep 1; done
@@ -44,7 +44,11 @@ fails=0
 for n in B C D; do
   read -r code t < "$OUT/$n.st"
   echo "stale-lock: $n queued behind the stalled run: $code after ${t}s"
-  [ "$code" = 503 ] || { echo "stale-lock: FAIL $n was not shed (a second runtime ran beside the stalled one?)"; fails=1; }
+  # The shed is the engine's busy answer (x-php-lock: shed): a 503, or since #1328 a 429 for a request that does not go
+  # to the cached Pages entrypoint (this probe carries the spike token, an operator request; page-copy.mjs busyAnswerFor).
+  # A second runtime beside the stalled one would answer 200 instead.
+  lock=$(tr -d '\r' < "$OUT/$n.hdr" | awk -F': ' 'tolower($1)=="x-php-lock"{print $2}')
+  { [ "$code" = 429 ] || [ "$code" = 503 ]; } && [ "$lock" = shed ] || { echo "stale-lock: FAIL $n was not shed (status $code, x-php-lock ${lock:-none}; a second runtime ran beside the stalled one?)"; fails=1; }
 done
 echo "stale-lock: new boots while A was stalled: $((boots1 - boots0))"
 [ "$((boots1 - boots0))" = 0 ] || { echo "stale-lock: FAIL a second runtime booted beside the live one"; fails=1; }
@@ -56,4 +60,4 @@ e=$(curl -s -m 60 -o /dev/null -w '%{http_code}' -H "x-spike-token: $TOK" "$B/?p
 echo "stale-lock: E after A ended: $e"
 [ "$e" = 200 ] || { echo "stale-lock: FAIL the site did not recover after A"; fails=1; }
 [ "$fails" = 0 ] || { echo "stale-lock: FAIL"; exit 1; }
-echo "stale-lock: ok: the queue behind a stalled run shed with 503, no second runtime, and the site recovered"
+echo "stale-lock: ok: the queue behind a stalled run shed with the busy answer, no second runtime, and the site recovered"

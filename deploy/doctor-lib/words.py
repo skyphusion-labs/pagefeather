@@ -140,7 +140,7 @@ def render(f):
         L.append("  %-20s not in the logs. Look at the response header: %s." % (h["header"], h["meaning"]))
     pl = next((i for i in sg["items"] if i["m"] == "php-lock"), None)
     if pl and pl["split"]:
-        L.append("Note: 'queued' means requests waited their turn (slow, not failed). 'shed' means a request got a fast 503.")
+        L.append("Note: 'queued' means requests waited their turn (slow, not failed). 'shed' means a request got a fast 503 (a 429 for a logged-in or cart page request, #1328).")
     ov = next((i for i in sg["items"] if i["m"] == "ocv"), None)
     if ov and (ov.get("count") or 0) > 0:
         L.append("WARNING: OBJECT_CACHE_VERSIONS is on but its versions table is MISSING, so the options cache does nothing (#734).")
