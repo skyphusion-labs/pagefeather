@@ -94,7 +94,7 @@ Keep this password safe. The folder `deploy/terraform/terraform.tfstate.d/` hold
 ## 2. How do I get to my site?
 
 - **Your site:** `https://my-site.<your-workers.dev-name>.workers.dev`. Step 4 prints it.
-- **wp-admin:** add `/wp-admin/` to that address. The user name is `admin`. The password is the one from step 5.
+- **wp-admin:** add `/wp-admin/` to that address. The user name is `admin`. The password is the one from step 5. If you lose it, [set a new one](operator.md#lost-the-admin-password).
 
 **First settings to check:**
 
