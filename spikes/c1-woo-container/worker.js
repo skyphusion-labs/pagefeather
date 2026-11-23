@@ -6,6 +6,7 @@
 // the cache purge through worker.internal (an outbound handler); it holds no keys
 // for them.
 import { isProductView, gatewayMayWarm, warmStart, warmInfo } from './warm.js';
+import { protectedUploadKey } from '../b2-wordpress/upload-scope.mjs'; // the same rule as b2: one copy
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { WorkerEntrypoint, cache } from 'cloudflare:workers';
 
@@ -526,6 +527,8 @@ async function serveUpload(req, env, url) {
 		return new Response('bad path', { status: 400 });
 	}
 	if (new TextEncoder().encode(key).length > 1024) return new Response('not found', { status: 404 });
+	// A folder a stock install's web server refuses (deny from all) is refused here too, before R2 is read.
+	if (protectedUploadKey(key)) return new Response('forbidden', { status: 403 });
 	let o;
 	try {
 		o = await env.MEDIA.get(key, { onlyIf: req.headers, range: req.headers });

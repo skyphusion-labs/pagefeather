@@ -1183,7 +1183,9 @@ rollback_deploy_dir() {
     python3 -I -c 'import shutil, sys; shutil.copytree(sys.argv[1], sys.argv[2], symlinks=True)' "$APP/node_modules" "$app/node_modules" || { echo "  the copy of node_modules failed" >&2; rm -rf "$rb"; return 1; }
   fi
   if [ "$WR" = "$ROOT/deploy/wr" ] && [ -x "$ROOT/deploy/tools/node_modules/.bin/wrangler" ]; then
-    mkdir -p "$rb/deploy"; cp -p "$ROOT/deploy/wr" "$rb/deploy/wr"
+    mkdir -p "$rb/deploy/wfp"; cp -p "$ROOT/deploy/wr" "$rb/deploy/wr"
+    # #1410: the mirror's deploy/wr re-applies the log redaction after the deploy, with the obs_settings.py next to it.
+    cp -p "$ROOT/deploy/wfp/obs_settings.py" "$rb/deploy/wfp/obs_settings.py" || { echo "  the copy of deploy/wfp/obs_settings.py failed" >&2; rm -rf "$rb"; return 1; }
     python3 -I -c 'import shutil, sys; shutil.copytree(sys.argv[1], sys.argv[2], symlinks=True)' "$ROOT/deploy/tools" "$rb/deploy/tools" || { echo "  the copy of deploy/tools failed" >&2; rm -rf "$rb"; return 1; }
     wr="$rb/deploy/wr"
   fi

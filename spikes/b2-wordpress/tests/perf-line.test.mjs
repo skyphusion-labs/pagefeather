@@ -32,7 +32,7 @@ test('path only: a query string never reaches the log', () => {
 });
 test('index.js: approach A (not in the object) logs aPerfLine with this request d.calls and d.ms', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /import \{ aPerfLine \} from '\.\/perf-line\.mjs';/);
+	assert.match(src, /import \{ aPerfLine[ ,}][^\n]*from '\.\/perf-line\.mjs';/);
 	assert.match(src, /\} else \{\n\t\t\t\t\/\/ #1078[^\n]*\n(?:\t\t\t\t\/\/[^\n]*\n)*\t\t\t\tconsole\.log\(JSON\.stringify\(aPerfLine\(\{[^\n]*dbN: d\.calls, dbMs: d\.ms/);
 });
 
@@ -106,4 +106,30 @@ test('#1169 aPerfLine carries dbConnN and dbConnMs, and index.js passes the per-
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /const conn0 = dbConnStats\(\);/);
 	assert.match(src, /dbConnN: conn1 \? conn1\.n - conn0\.n : undefined, dbConnMs: conn1 \? conn1\.ms - conn0\.ms : undefined/);
+});
+// #1402: the R2 and Images bridge ops are per request, as a delta against the request's start.
+import { r2OpsSnapshot, r2OpsDelta } from '../perf-line.mjs';
+test('#1402: r2 is the per-request delta of the bridge ops, only the ops that ran', () => {
+	const isolate = { put: { n: 4, ms: 300 }, get: { n: 9, ms: 120 } };
+	const start = r2OpsSnapshot(isolate);
+	isolate.put.n += 3; isolate.put.ms += 410;
+	isolate.images = { n: 1, ms: 2600 };
+	assert.deepEqual(r2OpsDelta(isolate, start), { put: { n: 3, ms: 410 }, images: { n: 1, ms: 2600 } }, 'get did not run: left out');
+	assert.equal(r2OpsDelta(isolate, r2OpsSnapshot(isolate)), undefined, 'no ops: no field');
+});
+test('#1402: the snapshot is a copy, so later ops do not move it', () => {
+	const isolate = { put: { n: 1, ms: 10 } };
+	const start = r2OpsSnapshot(isolate);
+	isolate.put.n = 5;
+	assert.equal(start.put.n, 1);
+});
+test('#1402: the A perf line carries r2, and drops a malformed entry', () => {
+	const l = aPerfLine({ path: '/wp-json/wp/v2/media', status: 201, r2: { put: { n: 3, ms: 410 }, bad: { n: 'x' } } });
+	assert.deepEqual(l.r2, { put: { n: 3, ms: 410 } });
+	assert.ok(!('r2' in aPerfLine({ path: '/', status: 200 })), 'no ops: no r2 key');
+});
+test('#1402: both perf lines in index.js log the per-request r2 delta', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /r2: r2OpsSnapshot\(stats\.r2\)/, 'the start snapshot');
+	assert.equal((src.match(/r2: r2OpsDelta\(stats\.r2, start\.r2\)/g) || []).length, 2, 'the A line and the object line');
 });

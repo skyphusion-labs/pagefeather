@@ -120,6 +120,10 @@ jobs:
       - name: Wrangler is pinned and called through deploy/wr
         # deploy/tools holds the exact version; a bare npx call runs whatever is installed or the latest.
         run: bash deploy/tests/wrangler-pin-test.sh
+      - name: deploy/wr re-applies the Workers Logs redaction after a deploy of a logs-on config (#1410)
+        # A stub wrangler whose upload resets redact_query_string, as the real one does, and a stand-in settings API.
+        # The control: the same deploy through a copy of deploy/wr without the re-apply leaves it false.
+        run: bash deploy/tests/wr-redact-test.sh
       - name: Deploy scripts keep the spike token and admin password out of curl's command line
         # -K <(printf 'header = ...') instead of -H: the value is not in the process list.
         run: bash deploy/tests/curl-argv-test.sh
@@ -155,6 +159,8 @@ jobs:
         # php/r2-uploads.php: the uploads root is a directory when the bucket is empty,
         # so wp_mkdir_p chmod()s the r2 stream and not a plain path that does not exist.
         run: php spikes/b2-wordpress/tests/upload-month-json-test.php
+      - name: "A downloadable product file stored in R2 opens through WooCommerce's force download"
+        run: php spikes/b2-wordpress/tests/wc-download-path-test.php
       - name: A deleted upload frees its reserved file name (#946)
         # The reserve row outlives the file. The next upload then gets a -1 suffix.
         # Delete and move release the row. The options fallback does too.
@@ -287,6 +293,8 @@ jobs:
       - name: Admin memory trace is operator-only, and its harness summary (#434)
         run: |
           node --test spikes/b2-wordpress/tests/mem-trace.test.mjs
+          node --test spikes/b2-wordpress/tests/operator-headers.test.mjs
+          node --test spikes/b2-wordpress/tests/upload-scope.test.mjs
           node --test spikes/b2-wordpress/tests/conformance-reset-gate.test.mjs
           python3 -I tests/wfp/admin-mem-test.py
       - name: Memory trace hooks mode against WordPress's own hook code (#504)
@@ -663,6 +671,8 @@ jobs:
       - name: c1 container fetch timeout tests
         # spikes/c1-woo-container/worker.js (issue #93): a hung container gets 504, admin is exempt.
         run: node spikes/c1-woo-container/tests/timeout-test.mjs
+      - name: "c1 refuses the upload folders a stock web server denies, with b2's rule"
+        run: node --test spikes/c1-woo-container/tests/upload-scope-c1.test.mjs
       - name: c1 deploy check tests
         # deploy/variants/c1.sh c1_check (issue #99) against a fake site: an old container first, a stuck PHP.
         run: deploy/variants/tests/c1-check-test.sh

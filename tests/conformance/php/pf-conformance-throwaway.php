@@ -14,9 +14,10 @@
  * The gate, all three required (anything less is refused, 401/403, and nothing is deleted):
  *   1. THE THROWAWAY: only this marker registers the route, and deploy/conformance.sh lets the marker onto a site only
  *      with CONFORMANCE=on, THROWAWAY=1 and a named site that is not in deploy/live-sites/ or deploy/wfp/live-sites/.
- *   2. THE SPIKE TOKEN: the request carries x-pf-conformance-reset: 1, and the Worker (index.js, handleInner) deletes
- *      that header before PHP runs unless x-spike-token matches the site's SPIKE_TOKEN secret. PHP never sees the
- *      token; it sees the header only when the Worker has checked it.
+ *   2. THE SPIKE TOKEN: the request carries x-pf-conformance-reset: 1, and the Worker (index.js, handleInner, through
+ *      stripOperatorHeaders in operator-headers.mjs) removes that header, under every spelling PHP maps to the same
+ *      key, before PHP runs unless x-spike-token matches the site's SPIKE_TOKEN secret. PHP never sees the token; it
+ *      sees the header only when the Worker has checked it.
  *   3. THE USER: a logged-in user who can edit theme options.
  * Tested in tests/conformance/throwaway-php-test.sh (and the Worker's strip in spikes/b2-wordpress/tests).
  */

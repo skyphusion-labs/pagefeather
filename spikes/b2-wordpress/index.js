@@ -66,7 +66,9 @@ import { reuseOn, createSpare, bootTestDelayMs, bootTestDelayAt, moduleImportsMe
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import { withDbRun } from './db-lifecycle.mjs';
 import { isVersionedKey, l1ExpFor } from './oc-l1.mjs';
-import { aPerfLine } from './perf-line.mjs';
+import { aPerfLine, r2OpsSnapshot, r2OpsDelta } from './perf-line.mjs';
+import { serveUpload } from './upload-scope.mjs';
+import { stripOperatorHeaders } from './operator-headers.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
@@ -2655,45 +2657,6 @@ function b64decode(str) {
 	return out;
 }
 
-// GET and HEAD /wp-content/uploads/<path> come from R2, not PHP, with Range
-// support (video seeking needs it). No PHP lock.
-async function serveUpload(req, env, url) {
-	let key;
-	try {
-		key = 'uploads/' + decodeURIComponent(url.pathname.slice('/wp-content/uploads/'.length));
-	} catch {
-		return new Response('bad path', { status: 400 });
-	}
-	// R2 keys are at most 1,024 bytes. A longer path cannot exist.
-	if (new TextEncoder().encode(key).length > 1024) return new Response('not found', { status: 404 });
-	let o;
-	try {
-		o = await env.MEDIA.get(key, { onlyIf: req.headers, range: req.headers });
-	} catch {
-		return new Response('bad range', { status: 416 });
-	}
-	if (o === null) return new Response('not found', { status: 404 });
-	const h = new Headers();
-	o.writeHttpMetadata(h);
-	h.set('etag', o.httpEtag);
-	// private: browsers keep it a day, the edge cache does not. A deleted upload
-	// is then gone at once, with no purge. Purges are rate limited (5 a minute).
-	h.set('cache-control', 'private, max-age=86400');
-	h.set('accept-ranges', 'bytes');
-	h.set('x-content-type-options', 'nosniff');
-	if (!('body' in o) || !o.body) return new Response(null, { status: 304, headers: h });
-	let status = 200;
-	let length = o.size;
-	if (o.range && req.headers.has('range')) {
-		const offset = o.range.offset ?? (o.range.suffix !== undefined ? o.size - o.range.suffix : 0);
-		length = o.range.length ?? (o.range.suffix !== undefined ? o.range.suffix : o.size - offset);
-		h.set('content-range', `bytes ${offset}-${offset + length - 1}/${o.size}`);
-		status = 206;
-	}
-	h.set('content-length', String(length));
-	return new Response(req.method === 'HEAD' ? null : o.body, { status, headers: h });
-}
-
 // GET/HEAD /skyphusion-invoice?k=&e=&s= : a signed, expiring link to an order's invoice
 // PDF (issue #227). verifyDownload checks the HMAC, the expiry and that the key is a
 // well-formed invoices/ key, so a link cannot be edited to read another object or used
@@ -5207,7 +5170,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			// Null here so a request that died before its clear cannot collect this request's keys.
 			uploadRun = null;
 			if (dbHandler && isMediaUploadRequest(req.method, url.pathname, url.search)) await uploadSweepThrottled(env);
-			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, lazyWrites: stats.lazyWrites, rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry, ocCalls: stats.ocCalls, ocHits: stats.ocHits, l2N: stats.l2N, l2Ms: stats.l2Ms, l2Hits: stats.l2Hits, httpCalls: stats.httpCalls, httpMs: stats.httpMs, txnOps: stats.txnOps, undoRows: stats.undoRows };
+			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, r2: r2OpsSnapshot(stats.r2), calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, lazyWrites: stats.lazyWrites, rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry, ocCalls: stats.ocCalls, ocHits: stats.ocHits, l2N: stats.l2N, l2Ms: stats.l2Ms, l2Hits: stats.l2Hits, httpCalls: stats.httpCalls, httpMs: stats.httpMs, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			// #352 the forced-reset proof (a MEASUREMENT that KILLS the isolate; spike token and HEADROOM_PROBE=on,
@@ -5264,14 +5227,10 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			}
 			const headers = {};
 			req.headers.forEach((v, k) => (headers[k] = v));
-			// The AST-cache per-request bypass (issue #173) is honored only with a
-			// valid spike token, so a visitor cannot disable the cache in production.
-			if (!spikeOk) delete headers['x-ast-cache-off'];
-			if (!spikeOk) delete headers['x-oc-off'];
-			// The memory trace and its switches (#434) reach PHP only with a valid spike token.
-			if (!spikeOk) { delete headers['x-mem-trace']; delete headers['x-mem-off']; }
-			if (!spikeOk) delete headers['x-pf-wc-defer']; // #768: the deferral's operator A/B switch (php/wc-route-defer.php)
-			if (!spikeOk) delete headers['x-pf-conformance-reset']; // #1401: the throwaway's global-styles reset needs the spike token too
+			// The operator switches PHP reads (the AST-cache bypass #173, the object cache off, the memory trace and its
+			// switches #434, the WooCommerce deferral A/B #768, the throwaway's global-styles reset #1401) reach PHP only
+			// with a valid spike token (operator-headers.mjs).
+			stripOperatorHeaders(headers, spikeOk);
 			let body;
 			if (env.MEDIA && isMediaUpload(req, url) && Number(req.headers.get('content-length') || 0) > STAGE_MIN_BYTES) {
 				const staged = await stageUpload(req, env);
@@ -5566,6 +5525,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					...(ledgerActive ? { mem: ledgerSnapshot('end') } : {}), // #394: the isolate memory ledger
 					bytes: r.bytes.length,
 					httpCalls: stats.httpCalls - start.httpCalls,
+					r2: r2OpsDelta(stats.r2, start.r2), // #1402: the R2 and Images bridge ops this request ran
 					txnOps: stats.txnOps - start.txnOps,
 					undoRows: stats.undoRows - start.undoRows,
 					ocCalls: stats.ocCalls - start.ocCalls,
@@ -5581,7 +5541,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			} else {
 				// #1078: approach A (PHP in the Worker, index-a.js) logs the same timing line, so a tail can time a real suite
 				// request: wall, boot, PHP time, and the query count and round-trip total (one bridge call per MySQL query).
-				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, lockWaitMs: runLockWaitMs, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, bootPh: booted && bootMs ? bootPhases(bootMs.marks) : undefined, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, ...(() => { const conn1 = dbConnStats(); return { dbConnN: conn1 ? conn1.n - conn0.n : undefined, dbConnMs: conn1 ? conn1.ms - conn0.ms : undefined }; })(), wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full, opCompiled: op0.plain === null || op1.plain === null ? undefined : op1.plain - op0.plain + (op1.rewrites - op0.rewrites) } : {}) })));
+				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, lockWaitMs: runLockWaitMs, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, bootPh: booted && bootMs ? bootPhases(bootMs.marks) : undefined, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, ...(() => { const conn1 = dbConnStats(); return { dbConnN: conn1 ? conn1.n - conn0.n : undefined, dbConnMs: conn1 ? conn1.ms - conn0.ms : undefined }; })(), wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), r2: r2OpsDelta(stats.r2, start.r2), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full, opCompiled: op0.plain === null || op1.plain === null ? undefined : op1.plain - op0.plain + (op1.rewrites - op0.rewrites) } : {}) })));
 			}
 			const response = new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 			// #394 (b): a recycled runtime is RELEASED, not only forgotten. bootPromise = null alone left

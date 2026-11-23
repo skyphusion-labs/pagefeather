@@ -7,6 +7,10 @@
                                                    script's observability OFF and read that back
                                                    (fail closed: never leave unredacted logs on)
     obs_settings.py show <namespace> <script>      print the script's observability settings
+    obs_settings.py after-deploy <wrangler deploy argv...>
+                                                   deploy/wr runs this after every successful
+                                                   `wrangler deploy` (#1410): when the deployed config
+                                                   turns logs on, redact-or-off for that script
 A namespace of "-" means an ordinary Worker, not a dispatch-namespace script (approach A's
 wp-a-lean, deployed with `wrangler deploy --env a-paid-lean`, #394).
 
@@ -107,7 +111,71 @@ def redact_or_off(ns, script):
     return 1
 
 
+def deploy_target(argv, cwd="."):
+    """From a `wrangler deploy` argv (the words after "deploy"): (namespace, script, logs_on), or None for a
+    --dry-run. The config is --config/-c, or wrangler.toml in the working directory; --env picks its
+    [env.<name>] table (its name, else "<name>-<env>"; its observability, else the top level, which
+    wrangler inherits); --name and --dispatch-namespace override. Logs are on when [observability]
+    enabled = true, or [observability.logs] enabled = true. TOML only: a JSON config is refused, since
+    this cannot tell if it turns the logs on."""
+    import tomllib
+    opts, i = {}, 0
+    keys = {"--config": "config", "-c": "config", "--env": "env", "-e": "env", "--name": "name", "--dispatch-namespace": "ns"}
+    while i < len(argv):
+        a = argv[i]
+        if a == "--dry-run":
+            return None
+        k, _, v = a.partition("=")
+        if k in keys and v:
+            opts[keys[k]] = v
+        elif a in keys and i + 1 < len(argv):
+            opts[keys[a]] = argv[i + 1]; i += 1
+        i += 1
+    conf = opts.get("config") or "wrangler.toml"
+    path = conf if os.path.isabs(conf) else os.path.join(cwd, conf)
+    if not os.path.exists(path):
+        if opts.get("config"):
+            raise SystemExit("deploy/wr: the config %s does not exist after a successful deploy" % conf)
+        for alt in ("wrangler.json", "wrangler.jsonc"):
+            if os.path.exists(os.path.join(cwd, alt)):
+                raise SystemExit("deploy/wr: %s is not TOML, so this cannot tell whether it turns Workers Logs on; use a .toml config (#1410)" % alt)
+        return (opts.get("ns", "-"), opts.get("name", ""), False)
+    if not path.endswith(".toml"):
+        raise SystemExit("deploy/wr: %s is not TOML, so this cannot tell whether it turns Workers Logs on; use a .toml config (#1410)" % conf)
+    with open(path, "rb") as f:
+        cfg = tomllib.load(f)
+    name, obs = cfg.get("name", ""), cfg.get("observability")
+    if opts.get("env"):
+        e = (cfg.get("env") or {}).get(opts["env"]) or {}
+        name = e.get("name") or "%s-%s" % (name, opts["env"])
+        obs = e.get("observability", obs)
+    obs = obs or {}
+    on = obs.get("enabled") is True or (obs.get("logs") or {}).get("enabled") is True
+    return (opts.get("ns", "-"), opts.get("name") or name, on)
+
+
+def after_deploy(argv):
+    t = deploy_target(argv, os.getcwd())
+    if t is None:
+        return 0
+    ns, script, on = t
+    if not on:
+        return 0
+    if not script:
+        print("deploy/wr: the deployed config turns Workers Logs on but names no script, so it cannot re-apply the query-string redaction: run obs_settings.py redact-or-off by hand NOW", file=sys.stderr)
+        return 3
+    if not os.environ.get("CLOUDFLARE_API_TOKEN") or not (os.environ.get("ACCOUNT_ID") or os.environ.get("CLOUDFLARE_ACCOUNT_ID") or os.environ.get("WFP_API")):
+        print("deploy/wr: %s is DEPLOYED with Workers Logs on, and a deploy resets their query-string redaction to false (#1410). This cannot re-apply it without CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID: set them and run obs_settings.py redact-or-off %s %s NOW" % (script, ns, script), file=sys.stderr)
+        return 3
+    if redact_or_off(ns, script) == 0:
+        return 0
+    print("deploy/wr: %s is DEPLOYED, but its query-string redaction did not read back, so its logs are OFF (obs_settings.py redact-or-off, #1410). Deploy again to retry." % script, file=sys.stderr)
+    return 3
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "after-deploy":
+        sys.exit(after_deploy(sys.argv[2:]))
     if len(sys.argv) != 4 or sys.argv[1] not in ("redact", "redact-or-off", "show"):
         sys.exit(__doc__)
     if sys.argv[1] == "show":

@@ -9,8 +9,9 @@ const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const php = readFileSync(new URL('../php/mem-trace.php', import.meta.url), 'utf8');
 
 test('x-mem-trace and x-mem-off reach PHP only with a valid spike token', () => {
-	assert.ok(src.includes("if (!spikeOk) { delete headers['x-mem-trace']; delete headers['x-mem-off']; }"));
-	const del = src.indexOf("delete headers['x-mem-trace']");
+	const ops = readFileSync(new URL('../operator-headers.mjs', import.meta.url), 'utf8');
+	assert.ok(ops.includes("'x-mem-trace'") && ops.includes("'x-mem-off'"), 'both are operator headers');
+	const del = src.indexOf('stripOperatorHeaders(headers, spikeOk);');
 	const run = src.indexOf('await handler.request({ url: url.pathname + url.search');
 	assert.ok(del > 0 && run > del, 'the headers must be deleted before PHP runs');
 });
