@@ -34,7 +34,10 @@ jobs:
           echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/$f" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/al" && tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP/al" actionlint
           echo "ACTIONLINT=$RUNNER_TEMP/al/actionlint" >> "$GITHUB_ENV"
-      - name: "workflow-lint's own tests: a planted bad file fails by name; no actionlint is could-not-measure"
-        run: bash tests/ci/workflow-lint-test.sh
+      # The lint first: when a workflow file is broken, this step is the one that names it (file, line, error).
       - name: Lint every workflow file
         run: bash tests/ci/workflow-lint.sh .github/workflows
+      # The tool's own tests, on fixed fixtures; they run even when the lint above found a broken file.
+      - name: "workflow-lint's own tests: a planted bad file fails by name; no actionlint is could-not-measure"
+        if: always()
+        run: bash tests/ci/workflow-lint-test.sh
