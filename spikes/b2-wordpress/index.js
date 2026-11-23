@@ -8,6 +8,7 @@ import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { installPhpBasicAuth } from './php-auth.mjs';
 import { installSiteTitle, hostFromOrigin } from './install-title.mjs';
+import { adminPasswordRoute, ADMIN_PASSWORD_PATH } from './admin-password.mjs';
 import { installPhpSelf } from './php-self.mjs';
 import { httpBlocking, httpTimeoutMs } from './http-nonblocking.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
@@ -5239,6 +5240,12 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				const point = mode === 'point' ? "$wpdb->query('CREATE TABLE IF NOT EXISTS pf352_probe_ddl (a INTEGER)');" : '';
 				const r = await php.run({ code: `<?php require '/wordpress/wp-load.php'; global $wpdb; update_option('pf352_${tag}_a', 'A', false); ${point} $keep = array(); for ($i = 0; $i < 64; $i++) { $keep[] = str_repeat('x', 8 << 20); } update_option('pf352_${tag}_b', 'B', false); echo 'survived';` });
 				return new Response(String(r.text).slice(0, 200), { headers: { 'cache-control': 'no-store' } });
+			}
+			if (url.pathname === ADMIN_PASSWORD_PATH) {
+				// #1375: one user's password on an installed site. The password is a header
+				// the PHP reads from a file. It is not in this script, a log line, or the
+				// answer. The runtime stays, as /_install does (#756).
+				return adminPasswordRoute({ req, spikeOk, php });
 			}
 			if (url.pathname === '/_install') {
 				php.writeFile('/tmp/admin-password', req.headers.get('x-admin-password') || (env.SPIKE_TOKEN ? '' : 'local-spike-password'));

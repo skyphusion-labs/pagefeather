@@ -142,6 +142,18 @@ Your sites stay up until you remove them. To take the whole deployment down:
 - A new `workers.dev` name or a new KV namespace can refuse the first request or write for a few seconds (a transient Cloudflare API error); the scripts retry the small deploys and wait for the site to answer, so a single transient does not fail a run. If `site` or `cross` refuses with "setup not green", the shared setup did not finish: run `up.sh` again and check it exits 0.
 - Every command checks the live state through the API, not just its own exit code, so a half-finished step is caught rather than assumed done.
 
+## Lost the admin password?
+
+`/_install` sets the admin password only when the site is new. This sets a password on a site that is already installed. It calls WordPress's own password function. The same request works on these sites and on the MySQL option, because both run `/_install`.
+
+The spike token is the Terraform output `spike_token`, beside `admin_password` above. On a single site it is `terraform output -raw spike_token` in `deploy/terraform`. Put the token and the new password in the environment. Do not type them in the command, and do not put them in the URL. The password must be at least 12 characters. The user is `admin` unless you set `ADMIN_USER` to another login.
+
+```sh
+curl -sS -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\nheader = "x-admin-password: %s"\nheader = "x-admin-user: %s"\n' "$SPIKE_TOKEN" "$ADMIN_PASSWORD" "${ADMIN_USER:-admin}") "https://wp-shop.<your-subdomain>.workers.dev/_admin-password"
+```
+
+A good answer is `{"ok":true,"user":"admin"}`. No token, or a wrong token, is refused.
+
 ## Where the detail is
 
 - The design and the measured results: issue #35 and `docs/wfp.md`.
