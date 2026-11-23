@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The conformance runner of #759: the upstream browser suites against a THROWAWAY site.
 
-    runner.py prepare --suite wp|wc|wc-api|gb --base-url https://<site> --cache on|off --run-dir <dir>
+    runner.py prepare --suite wp|wc|wc-api|gb --base-url https://<site> --cache on|off|on-unverified [--arm a] --run-dir <dir>
     runner.py config  --suite wp|wc|wc-api|gb --suite-dir <upstream e2e dir> --run-dir <dir> [--stock]
     runner.py check-state --base-url https://<site> --state <storage state json> [--state ...]
     runner.py summarize --report <playwright json> --out <results.json>
@@ -16,6 +16,9 @@ site: Rollins' seed owns all setup (lead ruling on #759), and prepare verifies i
   - the admin cannot log in through the wp-login.php form (deploy with TURNSTILE_LOGIN=off: an API
     POST carries no Turnstile token; the checkout and comment gates stay on with the test keys);
   - the page cache does not match --cache (one guest URL, fetched three times);
+  - --cache on-unverified without --arm a. on-unverified (#1277 round 2, the lead's ruling) is declared for arm (a)
+    only: it runs the same check as on and logs it LOUDLY as UNVERIFIED, but does not stop when no stored body was
+    served. "Could not measure" (no stamp at all) is still a stop. The run's env records the mode and the arm;
   - wc only: HTTP Basic with WP_PASSWORD is not 200, or a WRONG password is not 401 (the control:
     it proves Basic is checked, not ignored; see #761). The seed sets the admin account password to
     an application password, so ONE value passes the form and Basic: the WooCommerce suite uses
@@ -164,17 +167,22 @@ def check_cache(site, want):
     served = any(stamps[i] != "-" and stamps[i] in stamps[:i] for i in range(1, len(stamps)))
     say("page cache: guest GET / x3 -> cf-cache-status %s; x-pf-rendered %s; a stored body served: %s"
         % (",".join(seen), ",".join(stamps), "yes" if served else "no"))
-    if want == "on":
+    if want in ("on", "on-unverified"):
         if all(x == "-" for x in stamps):
-            raise Stop("--cache on: could not measure, no x-pf-rendered on any of 3 guest fetches of / (%s); the "
-                       "stamp is how a served body is told from a render (#1336)" % ",".join(seen))
-        if not served:
+            raise Stop("--cache %s: could not measure, no x-pf-rendered on any of 3 guest fetches of / (%s); the "
+                       "stamp is how a served body is told from a render (#1336)" % (want, ",".join(seen)))
+        if not served and want == "on-unverified":
+            say("UNVERIFIED: --cache on-unverified (#1277 round 2, arm (a) only): no stored body was served in 3 guest "
+                "fetches of / (x-pf-rendered %s; cf-cache-status %s). The run goes on; it is NOT a verified cache-on run."
+                % (",".join(stamps), ",".join(seen)))
+            print("UNVERIFIED cache-on: no stored body served (x-pf-rendered %s)" % ",".join(stamps), file=sys.stderr)
+        elif not served:
             raise Stop("--cache on, but no stored body was served in 3 guest fetches of /: every x-pf-rendered differs "
                        "(%s; cf-cache-status %s) (#1336)" % (",".join(stamps), ",".join(seen)))
     if want == "off" and (served or "HIT" in seen):
         raise Stop("--cache off, but the page cache answered (%s; x-pf-rendered %s): deploy with PAGE_CACHE_TTL=0"
                    % (",".join(seen), ",".join(stamps)))
-    return seen
+    return seen, served
 
 
 WC_BLOGNAME = "WooCommerce Core E2E Test Suite"
@@ -291,13 +299,16 @@ def cmd_prepare(a):
     user, password = os.environ.get("WP_USERNAME", "admin"), os.environ.get("WP_PASSWORD")
     if not password:
         raise Stop("WP_PASSWORD is not set (the admin account password)")
+    if a.cache == "on-unverified" and getattr(a, "arm", None) != "a":
+        raise Stop("--cache on-unverified is declared for #1277 round 2 arm (a) only (the lead's ruling); this run says "
+                   "--arm %s. Use --cache on, which stops when no stored body is served" % (getattr(a, "arm", None) or "(none)"))
     site = Site(a.base_url)
     check_target(site, a)
     site.login(user, password)
     say("admin: form login and REST nonce ok")
     if a.suite in ("wp", "gb"):
         editor_welcome_verify(site)
-    cache = check_cache(site, a.cache)
+    cache, served = check_cache(site, a.cache)
     pairs = [("WP_BASE_URL", site.base), ("WP_USERNAME", user)]
     if a.suite in ("wc", "wc-api", "wc-cpt"):
         cuser, cust, admin_email = wc_verify(site, user, password)
@@ -305,8 +316,11 @@ def cmd_prepare(a):
                   ("ADMIN_USER_EMAIL", admin_email), ("CUSTOMER_USER", cuser), ("CUSTOMER_PASSWORD", cust)]
     else:
         pairs += [("WP_PASSWORD", password)]
+    if getattr(a, "arm", None):
+        pairs += [("PF_CONFORMANCE_ARM", a.arm)]
     pairs += [("PF_CONFORMANCE_SUITE", a.suite), ("PF_CONFORMANCE_CACHE", a.cache),
-              ("PF_CONFORMANCE_CACHE_SEEN", ",".join(cache))]
+              ("PF_CONFORMANCE_CACHE_SEEN", ",".join(cache)),
+              ("PF_CONFORMANCE_CACHE_SERVED", "yes" if served else "no")]
     if a.suite in ("wp", "gb"):
         artifacts, storage = conformance_artifact_paths(a.run_dir)
         os.makedirs(os.path.dirname(storage), exist_ok=True)
@@ -653,7 +667,8 @@ def main(argv=None):
     p = sub.add_parser("prepare")
     p.add_argument("--suite", choices=("wp", "wc", "wc-api", "wc-cpt", "gb"), required=True)
     p.add_argument("--base-url", required=True)
-    p.add_argument("--cache", choices=("on", "off"), required=True)
+    p.add_argument("--cache", choices=("on", "off", "on-unverified"), required=True)
+    p.add_argument("--arm", help="the experiment arm this run belongs to (#1277 round 2); --cache on-unverified needs --arm a")
     p.add_argument("--run-dir", required=True)
     p = sub.add_parser("config")
     p.add_argument("--suite", choices=("wp", "wc", "wc-api", "wc-cpt", "gb"), required=True)

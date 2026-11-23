@@ -276,14 +276,14 @@ def main():
     t = tempfile.mkdtemp(prefix="conf-runner.")
     try:
 
-        def case(label, why, suite_name="wc", cache="on", setup=None, env_extra=None, expect_rc=3):
+        def case(label, why, suite_name="wc", cache="on", setup=None, env_extra=None, expect_rc=3, extra=(), want_out=None):
             s = Stub()
             if setup:
                 setup(s)
             env = {"WP_USERNAME": "admin", "WP_PASSWORD": s.password, "CUSTOMER_PASSWORD": s.customer_pw, "PATH": os.environ.get("PATH", "")}
             env.update(env_extra or {})
             rd = os.path.join(t, "run-" + re.sub(r"\W+", "-", label))
-            rc, o, e = run(["prepare", "--suite", suite_name, "--base-url", s.url, "--cache", cache, "--run-dir", rd], env)
+            rc, o, e = run(["prepare", "--suite", suite_name, "--base-url", s.url, "--cache", cache, "--run-dir", rd] + list(extra), env)
             s.close()
             writes = [c for c in s.calls if c[0] == "POST" and c[1] != "/wp-login.php"]
             if writes:
@@ -296,6 +296,8 @@ def main():
                 bad("%s: rc %d, expected %d (stderr: %s)" % (label, rc, expect_rc, e.strip()[:160]))
             elif expect_rc == 3 and not re.search(why, e):
                 bad("%s: stopped for another reason: %s" % (label, e.strip()[:160]))
+            elif want_out and not all(re.search(w, o + e) for w in want_out):
+                bad("%s: the output lacks %s" % (label, [w for w in want_out if not re.search(w, o + e)]))
             else:
                 ok("%s%s" % (label, (": " + e.strip()[:110]) if expect_rc == 3 else ""))
             return s, rd
@@ -327,6 +329,30 @@ def main():
              setup=lambda s: setattr(s, "stamp", "none"))
         case("cache off, DYNAMIC but the stamp repeats (#1336)", r"--cache off, but the page cache answered", cache="off",
              setup=lambda s: (setattr(s, "cache", "DYNAMIC"), setattr(s, "stamp", "same")))
+        # #1277 round 2 (the lead's ruling): --cache on-unverified, for arm (a) only.
+        NEW = lambda s: (setattr(s, "cache", "EXPIRED"), setattr(s, "stamp", "new"))
+        rs, _ = case("on-unverified without --arm stops", r"on-unverified is declared for #1277 round 2 arm \(a\) only.*--arm \(none\)",
+                     cache="on-unverified", setup=NEW)
+        if rs.calls:
+            bad("on-unverified refusal: the site was contacted %d times (from rollins's #1391)" % len(rs.calls))
+        else:
+            ok("on-unverified refusal: the site was never contacted")
+        case("on-unverified with --arm b stops", r"on-unverified is declared for #1277 round 2 arm \(a\) only.*--arm b",
+             cache="on-unverified", setup=NEW, extra=["--arm", "b"])
+        _, urd = case("on-unverified with --arm a and no stored body goes on, loudly", None, cache="on-unverified", setup=NEW,
+                      extra=["--arm", "a"], expect_rc=0, want_out=[r"UNVERIFIED: --cache on-unverified", r"a stored body served: no"])
+        uenv = open(os.path.join(urd, "env")).read() if os.path.exists(os.path.join(urd, "env")) else ""
+        if "PF_CONFORMANCE_CACHE=on-unverified" in uenv and "PF_CONFORMANCE_ARM=a" in uenv and "PF_CONFORMANCE_CACHE_SERVED=no" in uenv:
+            ok("on-unverified: the run's env records the mode, the arm and the result (served: no)")
+        else:
+            bad("on-unverified: the run's env does not record PF_CONFORMANCE_CACHE=on-unverified, PF_CONFORMANCE_ARM=a and PF_CONFORMANCE_CACHE_SERVED=no")
+        case("on-unverified with --arm a still stops when it cannot measure", r"--cache on-unverified: could not measure",
+             cache="on-unverified", setup=lambda s: setattr(s, "stamp", "none"), extra=["--arm", "a"])
+        case("on-unverified with --arm a and a stored body: no UNVERIFIED line needed", None, cache="on-unverified",
+             setup=lambda s: (setattr(s, "cache", "EXPIRED"), setattr(s, "stamp", "same")), extra=["--arm", "a"], expect_rc=0,
+             want_out=[r"a stored body served: yes"])
+        case("cache on is unchanged: no stored body still stops, even with --arm a", r"--cache on, but no stored body was served",
+             setup=NEW, extra=["--arm", "a"])
         case("cache on, EXPIRED with the same stamp is served (#1336)", None,
              setup=lambda s: (setattr(s, "cache", "EXPIRED"), setattr(s, "stamp", "same")), expect_rc=0)
         # Basic auth (#761).
