@@ -20,6 +20,7 @@ def check(name, got, want):
     else: print("FAIL %s: got [%s], want [%s]" % (name, got, want)); fails += 1
 
 import presign, box  # noqa: E402
+TEMPS = []  # every temp dir this test makes; none may outlive it (a creds fixture was left in TMPDIR, 2026-11-23)
 
 # 1. presign: the expected signatures come from botocore 1.44.9, a separate SigV4 implementation, not from this code:
 # generate_presigned_url("get_object", ...) with the same key id, secret and the signing time pinned to 2013-05-24T00:00:00Z.
@@ -48,7 +49,7 @@ for label, script in (("the plain value", "echo fixture-alpha-zq7\n"),
     check("userdata: %s in the job script is refused (and the message does not echo it)" % label, got, "refused")
 
 # 3. handoff against the fake S3.
-T = tempfile.mkdtemp(); pf = os.path.join(T, "port")
+T = tempfile.mkdtemp(); TEMPS.append(T); pf = os.path.join(T, "port")
 fs = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "..", "..", "wfp", "tests", "fake-s3.py"), pf])
 try:
     for _ in range(50):
@@ -147,7 +148,7 @@ check("create: and that box and its firewall are destroyed", (sorted(cs["instanc
 cv.shutdown()
 # 6. BOX_PUBLIC_KEYS (#1405): every creds value is checked unless its key is named as a public identifier. No name
 # pattern decides it, so a secret under an unexpected name (DATABASE_URL with a password in it) is still checked.
-cf = os.path.join(tempfile.mkdtemp(), "creds.env")
+_cfd = tempfile.mkdtemp(); TEMPS.append(_cfd); cf = os.path.join(_cfd, "creds.env")
 open(cf, "w").write("export CLOUDFLARE_API_TOKEN=tok-zq7-fixture-alpha\nMYSQL_USER=pf1327e\nMYSQL_DATABASE='pf1327e_wp'\n"
                     "DATABASE_URL=mysql://u:pw-zq7-fixture@h/db\n")
 vals, absent = box.creds_values(cf, public="MYSQL_USER MYSQL_DATABASE ACCOUNT_ID")
@@ -176,5 +177,6 @@ ji = next((i for i, l in enumerate(lines) if "base64 -d > /root/job.sh" in l), N
 check("HOME: the user-data exports HOME=/root before the job", hi is not None and ji is not None and hi < ji, True)
 envrun = subprocess.run(["env", "-i", "PATH=/usr/bin:/bin", "bash", "-c", "set -u; " + lines[hi] + "; echo \"[$HOME]\""], capture_output=True, text=True)
 check("HOME: under env -i and set -u, that line gives a HOME", envrun.stdout.strip(), "[/root]")
+check("cleanup: every temp dir this test made is gone", [d for d in TEMPS if os.path.exists(d)], [])
 print("%d failing check(s)" % fails)
 sys.exit(1 if fails else 0)
