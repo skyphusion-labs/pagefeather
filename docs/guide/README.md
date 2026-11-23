@@ -30,7 +30,7 @@ Each site is still one Durable Object. Work the cache cannot answer is still abo
 
 ### A real store
 
-You want a real WooCommerce store. Use approach A. PHP runs in a Worker. Your MySQL is reached through Hyperdrive. You deploy with `deploy/deploy.sh`. The variant is `a`. The manual below has the steps.
+You want a real WooCommerce store. Use approach A. PHP runs in a Worker. Your MySQL is reached through Hyperdrive. You deploy with `deploy/deploy.sh`. The variant is `a`. The manual below has the steps. Pre-alpha testers start with the [Tier A quickstart](../tier-a-quickstart.md).
 
 This path runs on Workers Paid, at $5 a month ([Plan limits and cost](cost.md)). You also pay for your MySQL server. A database box from `MYSQL=vultr` is $10 a month ([Cost](../../README.md#cost)). Any other MySQL server is your own bill.
 

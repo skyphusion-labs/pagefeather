@@ -73,7 +73,8 @@ cd deploy/terraform && terraform workspace select <site name> && terraform outpu
 - `https://<site name>.<subdomain>.workers.dev/` answers with the site.
 - `/wp-admin/` takes the `admin` login.
 - With `WOO_ACTIVE=1`, `/shop/` answers.
-- Every response has a `cf-placement` header. `remote-<code>` means the Worker ran next to your database (`remote-SEA` for `azure:westus2`). `local-<code>` means it ran next to you, and the placement did not apply.
+- A placed response has a `cf-placement` header. `remote-<code>` means the Worker ran next to your database (`remote-SEA` for `azure:westus2`). `local-<code>` means it ran next to you, and the placement did not apply.
+- One exception today: a guest page that is not in the page cache yet (a MISS) renders in the cached `Pages` path, and that path is not placed. It renders at the visitor's edge, far from the database: about 57 ms per query under load on `cf759hl`, against about 17 ms placed ([the MISS limit](guide/limits.md#on-the-mysql-option-a-guest-product-page-that-was-not-cached-yet-was-slow-1277-open-until-measured-end-to-end), #1277).
 
 ## 4. The Terraform state (it holds secrets)
 
@@ -132,14 +133,16 @@ Every check runs before anything is made, and each one names the setting:
 - `MYSQL_ACCESS_CLIENT_ID` and `MYSQL_ACCESS_CLIENT_SECRET`: reach a server behind a Cloudflare Tunnel and Access, with no public port and no SSL needed (CR #141).
 - `SITE_ORIGIN=https://<your domain>`: the site's own address, for a custom domain.
 - `OBSERVABILITY=1`: Workers Logs with our own events (no request metadata).
-- `PHP_OVERFLOW=0`: turns off the overflow pool. The pool is on by default (#1119): a request that would wait behind a long PHP run in its isolate runs on a Durable Object pool instead. It costs about 38 USD per million moved requests, and only a busy store moves any.
+- `PHP_OVERFLOW=1`: turns on the overflow pool, which is **off by default** (since #1298, Conrad's ruling on #1277). With it, a request that would wait behind a long PHP run in its isolate runs on a Durable Object pool instead. It is off because the pool's objects run far from the database: on `cf759hl` a moved request paid about 3 times the cost per query, a net loss of about 2 s per moved request at the median ([approach-a-overflow.md](approach-a-overflow.md)).
 - Everything else is in [deploy/README.md](../deploy/README.md). The defaults there are the measured ones.
 
 ## Known limits (pre-alpha)
 
 - **Mail:** a workers.dev site has no sender, so WordPress sends no mail. Order confirmations and password resets need `MAIL_FROM` on a domain onboarded for Cloudflare Email Sending (`deploy/email-sending.sh`). A failed send is logged and queued for a retry (#1062).
-- **Background jobs:** WP-Cron and WooCommerce's Action Scheduler run with `A_CRON=1` (#855). Its live proof is the open part of #1077.
-- **WooCommerce admin** pages can be slow on this tier (#1078).
+- **Background jobs:** WP-Cron and WooCommerce's Action Scheduler run on a cron object, **on by default** (#1166, #855). `A_CRON=0` turns it off; then nothing runs the scheduled jobs.
+- **Checkout is slow:** on `cf759hl` the blocks checkout's order POST took 4.8 to 6.8 s after #1219, measured on its branch; it was 9.3 to 11.8 s before. What is left is database time, about 13 ms a query ([checkout](guide/limits.md#woocommerce-checkout-is-slow-on-the-mysql-option-1218-1210), #1218).
+- **A guest page cache MISS is slow:** 3 guest product pages on a MISS took 9 to 12 s at the browser on `cf759hl`, under the suite's load ([the MISS limit](guide/limits.md#on-the-mysql-option-a-guest-product-page-that-was-not-cached-yet-was-slow-1277-open-until-measured-end-to-end), #1277). A page in the cache (a HIT) runs no PHP.
+- **WooCommerce admin and product batches are slow:** a product save about 2 to 3 s, a batch of 5 new products 6.5 s, larger batches up to 14 s (p95) under load; each query costs about 16.6 ms ([admin and batches](guide/limits.md#woocommerce-admin-screens-and-bulk-product-edits-are-slow-on-the-mysql-option-1078), #1078).
 - The open checks for this release are listed on #1077. Report what you find as a GitHub issue on `skyphusion-labs/pagefeather`. Include:
   - the commit you deployed (`git rev-parse --short HEAD`);
   - the deploy's output (it names the build, under `_pf/<build id>`);
