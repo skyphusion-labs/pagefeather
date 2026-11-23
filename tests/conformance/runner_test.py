@@ -342,6 +342,16 @@ def main():
         _, urd = case("on-unverified with --arm a and no stored body goes on, loudly", None, cache="on-unverified", setup=NEW,
                       extra=["--arm", "a"], expect_rc=0, want_out=[r"UNVERIFIED: --cache on-unverified", r"a stored body served: no"])
         uenv = open(os.path.join(urd, "env")).read() if os.path.exists(os.path.join(urd, "env")) else ""
+        # rollins's surviving mutant (#1393 review): a raw line that drops the stamp must fail. The stub stamps a new render
+        # 1795000000000 + n on the n-th GET /, so each raw line must carry ITS fetch's real stamp and HTTP 200.
+        uraw = dict(re.findall(r"^export PF_CONFORMANCE_CACHE_RAW_(\d)=(.*)$", uenv, re.M))
+        want_raw = {"1": ("HTTP 200", "cf-cache-status MISS", "x-pf-rendered 1795000000001"),
+                    "2": ("HTTP 200", "cf-cache-status EXPIRED", "x-pf-rendered 1795000000002"),
+                    "3": ("HTTP 200", "cf-cache-status EXPIRED", "x-pf-rendered 1795000000003")}
+        if all(k in uraw and all(w in uraw[k] for w in ws) for k, ws in want_raw.items()):
+            ok("on-unverified: each raw guard line carries its fetch's real status, cache status and stamp")
+        else:
+            bad("on-unverified: a raw guard line lacks its fetch's real status, cache status or stamp (%s)" % uraw)
         if "PF_CONFORMANCE_CACHE=on-unverified" in uenv and "PF_CONFORMANCE_ARM=a" in uenv and "PF_CONFORMANCE_CACHE_SERVED=no" in uenv:
             ok("on-unverified: the run's env records the mode, the arm and the result (served: no)")
         else:
