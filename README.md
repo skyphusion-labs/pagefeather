@@ -4,7 +4,7 @@
 
 This is for you if you build WordPress sites, for yourself or for clients, and you are tired of looking after a WordPress server.
 
-**New here? [Start here](docs/guide/start-here.md):** how to install a site, how to log in, and what the limits are, on one page. Before you build, please read the [known limitations](docs/guide/limits.md).
+**New here? [Start here](docs/guide/start-here.md):** how to install a site, how to log in, and what the limits are, on one page. Before you build, please read the [known limitations](docs/guide/limits.md). Plugins and themes: [how to add, update and remove them](docs/guide/plugins-and-themes.md).
 
 ## Two ways to run a site
 

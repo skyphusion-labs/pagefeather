@@ -4,6 +4,8 @@ This is the day-one walkthrough for one operator who runs a couple of WordPress 
 
 **Names on this page.** The built-in database option is `b-dosql` in the engineering docs and commands, and the MySQL option is approach A.
 
+**Plugins and themes:** you add them when you deploy, not in wp-admin. [How to add, update and remove them](plugins-and-themes.md).
+
 ## What you need
 
 - A Cloudflare account on the **Workers for Platforms Paid** plan and the **Workers Paid** plan. A pagefeather Workers for Platforms account costs $30 a month for two or more sites. That is the Workers for Platforms Paid plan ($25) plus the Workers Paid plan ($5). The reference account runs both. The Workers for Platforms price includes 20 million requests, then $0.30 per million. It includes 60 million CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another site at rest costs about $0, up to the 1,000 included scripts. Cloudflare's WfP pricing page does not say whether Workers Paid is strictly required, so plan for both. The full table is in [cost.md](cost.md).

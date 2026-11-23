@@ -82,7 +82,7 @@ The win over a LAMP box: cached reads are served at the edge with no server roun
 
 ## Plugins and themes: in the build, not installed from wp-admin
 
-This is the biggest change of habit, so it gets its own section.
+This is the biggest change of habit, so it gets its own section. The steps are on one page: [how to add, update and remove plugins and themes](plugins-and-themes.md).
 
 On a LAMP host you install, update and edit plugins from wp-admin. Here every site is code-locked:
 the generated `wp-config.php` sets `DISALLOW_FILE_MODS` and `DISALLOW_FILE_EDIT`, and installing,
