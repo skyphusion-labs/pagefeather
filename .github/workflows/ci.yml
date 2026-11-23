@@ -667,6 +667,10 @@ jobs:
       - name: c1 boot log watch tests
         # deploy/variants/c1.sh c1_up_watch and c1-bootwatch.py (issue #103) against a fake site and bucket: no log, a stalled log, an old log.
         run: deploy/variants/tests/c1-bootwatch-test.sh
+      - name: deploy Terraform locks hold every platform's hashes (issue #1382)
+        # A lock with one platform's h1 hash is rewritten by terraform init on another platform, so the clone is dirty and
+        # every build is stamped -dirty. terraform providers lock for linux and darwin, amd64 and arm64, must add nothing.
+        run: deploy/tests/tf-lock-platforms-test.sh
       - name: fixtures terraform root leaves the clone clean
         # tests/fixtures/terraform: every Terraform artifact is ignored and the lock file is tracked. The init half runs where terraform exists (not on the runner).
         run: tests/fixtures/tests/tf-clean-test.sh
