@@ -3773,6 +3773,8 @@ export class PhpRuntime extends DurableObject {
 			});
 			if (woke.status !== 200) return new Response('forbidden', { status: woke.status });
 			if (woke.body && woke.body.pulled) console.log(JSON.stringify({ m: 'alarm', pulledBy: 'cron-wake', was: woke.body.was }));
+			// #1381: a fresh site (no alarm) or a stale one: the wake armed it at now.
+			if (woke.body && woke.body.armed) console.log(JSON.stringify({ m: 'alarm', armedBy: 'cron-wake', stale: woke.body.stale, was: woke.body.was }));
 			return Response.json(woke.body, { headers: { 'cache-control': 'no-store' } });
 		}
 		// #855: the Workers Cron tick from the site Worker (POST + x-pf-cron-tick). A WATCHDOG for this object's cron alarm:
