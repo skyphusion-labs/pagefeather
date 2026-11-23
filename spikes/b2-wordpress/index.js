@@ -67,6 +67,7 @@ import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import { withDbRun } from './db-lifecycle.mjs';
 import { isVersionedKey, l1ExpFor } from './oc-l1.mjs';
 import { aPerfLine, r2OpsSnapshot, r2OpsDelta } from './perf-line.mjs';
+import { serveUpload } from './upload-scope.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
@@ -2653,45 +2654,6 @@ function b64decode(str) {
 	const out = new Uint8Array(s.length);
 	for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
 	return out;
-}
-
-// GET and HEAD /wp-content/uploads/<path> come from R2, not PHP, with Range
-// support (video seeking needs it). No PHP lock.
-async function serveUpload(req, env, url) {
-	let key;
-	try {
-		key = 'uploads/' + decodeURIComponent(url.pathname.slice('/wp-content/uploads/'.length));
-	} catch {
-		return new Response('bad path', { status: 400 });
-	}
-	// R2 keys are at most 1,024 bytes. A longer path cannot exist.
-	if (new TextEncoder().encode(key).length > 1024) return new Response('not found', { status: 404 });
-	let o;
-	try {
-		o = await env.MEDIA.get(key, { onlyIf: req.headers, range: req.headers });
-	} catch {
-		return new Response('bad range', { status: 416 });
-	}
-	if (o === null) return new Response('not found', { status: 404 });
-	const h = new Headers();
-	o.writeHttpMetadata(h);
-	h.set('etag', o.httpEtag);
-	// private: browsers keep it a day, the edge cache does not. A deleted upload
-	// is then gone at once, with no purge. Purges are rate limited (5 a minute).
-	h.set('cache-control', 'private, max-age=86400');
-	h.set('accept-ranges', 'bytes');
-	h.set('x-content-type-options', 'nosniff');
-	if (!('body' in o) || !o.body) return new Response(null, { status: 304, headers: h });
-	let status = 200;
-	let length = o.size;
-	if (o.range && req.headers.has('range')) {
-		const offset = o.range.offset ?? (o.range.suffix !== undefined ? o.size - o.range.suffix : 0);
-		length = o.range.length ?? (o.range.suffix !== undefined ? o.range.suffix : o.size - offset);
-		h.set('content-range', `bytes ${offset}-${offset + length - 1}/${o.size}`);
-		status = 206;
-	}
-	h.set('content-length', String(length));
-	return new Response(req.method === 'HEAD' ? null : o.body, { status, headers: h });
 }
 
 // GET/HEAD /skyphusion-invoice?k=&e=&s= : a signed, expiring link to an order's invoice

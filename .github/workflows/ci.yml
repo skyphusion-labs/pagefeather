@@ -159,6 +159,8 @@ jobs:
         # php/r2-uploads.php: the uploads root is a directory when the bucket is empty,
         # so wp_mkdir_p chmod()s the r2 stream and not a plain path that does not exist.
         run: php spikes/b2-wordpress/tests/upload-month-json-test.php
+      - name: "A downloadable product file stored in R2 opens through WooCommerce's force download"
+        run: php spikes/b2-wordpress/tests/wc-download-path-test.php
       - name: A deleted upload frees its reserved file name (#946)
         # The reserve row outlives the file. The next upload then gets a -1 suffix.
         # Delete and move release the row. The options fallback does too.
@@ -290,6 +292,7 @@ jobs:
       - name: Admin memory trace is operator-only, and its harness summary (#434)
         run: |
           node --test spikes/b2-wordpress/tests/mem-trace.test.mjs
+          node --test spikes/b2-wordpress/tests/upload-scope.test.mjs
           python3 -I tests/wfp/admin-mem-test.py
       - name: Memory trace hooks mode against WordPress's own hook code (#504)
         # The three wp-includes files of the pinned WordPress (spikes/b2-wordpress/build.sh
@@ -665,6 +668,8 @@ jobs:
       - name: c1 container fetch timeout tests
         # spikes/c1-woo-container/worker.js (issue #93): a hung container gets 504, admin is exempt.
         run: node spikes/c1-woo-container/tests/timeout-test.mjs
+      - name: "c1 refuses the upload folders a stock web server denies, with b2's rule"
+        run: node --test spikes/c1-woo-container/tests/upload-scope-c1.test.mjs
       - name: c1 deploy check tests
         # deploy/variants/c1.sh c1_check (issue #99) against a fake site: an old container first, a stuck PHP.
         run: deploy/variants/tests/c1-check-test.sh
