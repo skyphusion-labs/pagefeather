@@ -3,7 +3,7 @@
 No Vultr, no Cloudflare: a fake S3 (deploy/wfp/tests/fake-s3.py) and a fake Vultr API in this file.
   python3 -I deploy/box/tests/box-test.py
 Cases:
-  presign: SigV4 query presigning reproduces AWS's published example (the S3 docs' GET example, fixed key and date);
+  presign: SigV4 query presigning reproduces botocore's signatures (virtual-host and path style, fixed key and time);
   userdata: a creds value, or its base64, in the user-data is REFUSED; the creds reach the box only by the presigned GET;
   handoff: release puts the creds, waits for the box's read marker, deletes them, and reads back 404. A HEAD that still
            finds the object (the delete was lost) FAILS the release (the guard can fail);
@@ -20,15 +20,19 @@ def check(name, got, want):
 
 import presign, box  # noqa: E402
 
-# 1. presign: AWS's documented example (S3 API reference, "Authenticating Requests: Using Query Parameters").
-u = presign.presign("GET", "https://examplebucket.s3.amazonaws.com", None, "test.txt", "AKIAIOSFODNN7EXAMPLE",
-                    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", 86400, region="us-east-1", now=1369353600)
+# 1. presign: the expected signatures come from botocore 1.44.9, a separate SigV4 implementation, not from this code:
+# generate_presigned_url("get_object", ...) with the same key id, secret and the signing time pinned to 2013-05-24T00:00:00Z.
+# (AWS's own published example uses an AKIA-shaped key id, which this repo's CI secret scan rightly refuses in the tree.)
+KID, SEC, NOW = "EXAMPLEKEYID0000", "example-secret-for-box-test", 1369353600
+u = presign.presign("GET", "https://examplebucket.s3.amazonaws.com", None, "test.txt", KID, SEC, 86400, region="us-east-1", now=NOW)
 q = urllib.parse.parse_qs(urllib.parse.urlsplit(u).query)
-check("presign: AWS's example signature", q.get("X-Amz-Signature", [""])[0], "aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404")
-check("presign: the credential scope", q.get("X-Amz-Credential", [""])[0], "AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request")
-check("presign: the secret key is never in the url", "wJalrXUtnFEMI" in u, False)
-u2 = presign.presign("PUT", "https://acct.r2.cloudflarestorage.com", "bkt", "run/a b.txt", "kid", "sec", 600, now=1700000000)
-check("presign: path style, the key quoted", urllib.parse.urlsplit(u2).path, "/bkt/run/a%20b.txt")
+check("presign: virtual-host GET matches botocore", q.get("X-Amz-Signature", [""])[0], "ad1103de9f1f66f2e654bf39cf8beae0ab57814052f247e2cccc5ad15ae8c4c3")
+check("presign: the credential scope", q.get("X-Amz-Credential", [""])[0], KID + "/20130524/us-east-1/s3/aws4_request")
+check("presign: the secret key is never in the url", SEC in u, False)
+u2 = presign.presign("GET", "https://acct.r2.cloudflarestorage.com", "bkt", "run/a b.txt", KID, SEC, 600, now=NOW)
+check("presign: path style (R2), the key quoted", urllib.parse.urlsplit(u2).path, "/bkt/run/a%20b.txt")
+check("presign: path-style GET with a space in the key matches botocore", urllib.parse.parse_qs(urllib.parse.urlsplit(u2).query).get("X-Amz-Signature", [""])[0],
+      "77df09a1e6be24169aac5a95e53c8f6c71e647b177fc81f41158a744cd9e959e")
 
 # 2. userdata: the creds never ride in the user-data.
 creds = {"PF_TOKEN": "tok-SECRET-123456", "DB_PASSWORD": "pw-SECRET-abcdef"}  # gitleaks:allow (a fake fixture token)
