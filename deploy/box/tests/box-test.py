@@ -35,15 +35,15 @@ check("presign: path-style GET with a space in the key matches botocore", urllib
       "77df09a1e6be24169aac5a95e53c8f6c71e647b177fc81f41158a744cd9e959e")
 
 # 2. userdata: the creds never ride in the user-data.
-creds = {"PF_TOKEN": "tok-SECRET-123456", "DB_PASSWORD": "pw-SECRET-abcdef"}  # gitleaks:allow (a fake fixture token)
+creds = {"FIXTURE_A": "fixture-alpha-zq7", "FIXTURE_B": "fixture-bravo-zq7"}  # stand-in values: what matters is that they reach no user-data
 ok_ud = box.build_userdata("echo hello\n", puts={"done": "https://r2/put?sig"}, get="https://r2/get?sig", secrets=creds.values())
-check("userdata: a clean user-data builds", "creds.env" in ok_ud and "tok-SECRET" not in ok_ud, True)
-for label, script in (("the plain value", "echo tok-SECRET-123456\n"),
-                      ("the base64 of a value", "echo %s\n" % base64.b64encode(b"pw-SECRET-abcdef").decode())):
+check("userdata: a clean user-data builds", "creds.env" in ok_ud and "fixture-alpha" not in ok_ud, True)
+for label, script in (("the plain value", "echo fixture-alpha-zq7\n"),
+                      ("the base64 of a value", "echo %s\n" % base64.b64encode(b"fixture-bravo-zq7").decode())):
     try:
         box.build_userdata(script, puts={}, get="https://r2/get?sig", secrets=creds.values()); got = "built"
     except box.SecretInUserData as e:
-        got = "refused" if "SECRET" not in str(e) else "refused-but-leaked-in-message"
+        got = "refused" if "fixture-" not in str(e) else "refused-but-leaked-in-message"
     check("userdata: %s in the job script is refused (and the message does not echo it)" % label, got, "refused")
 
 # 3. handoff against the fake S3.
@@ -63,17 +63,17 @@ try:
             urllib.request.urlopen(urllib.request.Request(st.presign("PUT", run_id + "/creds-read", 60), data=b"t", method="PUT"))
         threading.Thread(target=run, daemon=True).start()
     box_reads("r1")
-    r = box.release(st, "r1", b"PF_TOKEN=tok-SECRET-123456\n", wait_s=10, poll_s=0.1)  # gitleaks:allow (a fake fixture token)
+    r = box.release(st, "r1", b"FIXTURE_A=fixture-alpha-zq7\n", wait_s=10, poll_s=0.1)
     check("handoff: release saw the read marker", r["read"], True)
     check("handoff: the creds object is gone (HEAD 404)", r["head_after"], 404)
     check("handoff: release reports ok", r["ok"], True)
     # The guard can fail: a delete that does not take (the object stays) must fail the release.
     box_reads("r1b")
-    r2 = box.release(st, "r1b", b"PF_TOKEN=x\n", wait_s=10, poll_s=0.1, _skip_delete_for_test=True)
+    r2 = box.release(st, "r1b", b"FIXTURE_A=x\n", wait_s=10, poll_s=0.1, _skip_delete_for_test=True)
     check("handoff: the creds object LEFT IN PLACE fails the release", (r2["ok"], r2["head_after"]), (False, 200))
     time.sleep(0.6); st.delete("r1b/creds.env")  # after the box thread has read
     # No read marker in time: the creds are still deleted (never left waiting), and the release reports not read.
-    r3 = box.release(st, "r2", b"PF_TOKEN=y\n", wait_s=0.5, poll_s=0.1)
+    r3 = box.release(st, "r2", b"FIXTURE_A=y\n", wait_s=0.5, poll_s=0.1)
     check("handoff: no read marker: deleted anyway, reported unread", (r3["read"], r3["head_after"], r3["ok"]), (False, 404, False))
 finally:
     fs.terminate(); fs.wait()
