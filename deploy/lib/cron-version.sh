@@ -8,12 +8,34 @@
 # cron-idle.mjs) ahead, set by the OLD build, so the first tick on the new build can come 5 min after a deploy (cf759hw:
 # 3 min 29 s and 2 min 44 s, both at the parked time). A 120 s wait warned on both; a false alarm teaches people to
 # ignore the real one. It never fails the deploy (the lead's ruling): a warning, with both builds named.
+# #1360: before that poll, one POST /_cron-wake (spike token) pulls the parked alarm in to now. The route only sets the
+# alarm; the object's own alarm runs the tick. A failed wake is printed and never fails the deploy: the poll still runs.
 # Test: deploy/tests/cron-version-readback-test.sh.
+# One wake. Prints whether it was accepted. Always returns 0.
+cron_version_wake() {
+  local url=$1 token=$2 body code
+  body=$(mktemp "${TMPDIR:-/tmp}/cron-wake.XXXXXX") || { echo "cron wake: not accepted (no temp file); the readback continues"; return 0; }
+  code=$(curl -s -m 20 -o "$body" -w '%{http_code}' -X POST -K <(printf 'header = "x-spike-token: %s"\nheader = "cache-control: no-cache"\n' "$token") "$url/_cron-wake" 2>/dev/null) || code=000
+  if [ "$code" = 200 ] && python3 -I -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if d.get("ok") is True else 1)' < "$body" 2>/dev/null; then
+    echo "cron wake: accepted"
+  else
+    echo "cron wake: not accepted (HTTP ${code:-000}); the readback continues"
+  fi
+  rm -f "$body"
+  return 0
+}
 cron_version_readback() {
   local url=$1 token=$2 wait=${CRON_VERSION_WAIT_S:-600} every=${CRON_VERSION_EVERY_S:-10} t0=$SECONDS body worker cron alarm
   [ "${VARIANT:-}" = a ] || return 0
   # The cron object exists exactly when a-settings.sh renders it: ask a_cron_on (its default can change, #1164).
   if declare -F a_cron_on > /dev/null; then a_cron_on || return 0; else [ "${A_CRON:-0}" = 1 ] || return 0; fi
+  # #1360: once, before the poll. cron_version_wake returns 0 even when the wake is refused or unreachable.
+  cron_version_wake "$url" "$token"
   # #1152 proof (cf759hx deploy 2): the build of the code that ANSWERS /_cron-build is not the build that RUNS the legs.
   # ok only when the Worker, the object and the object's last ALARM (its own baked-in BUILD_ID) are one build.
   while :; do

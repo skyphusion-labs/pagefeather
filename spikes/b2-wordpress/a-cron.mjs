@@ -1,6 +1,8 @@
 // Approach A: Workers Cron Trigger ticks a named PhpRuntime (#855). Hyperdrive only; off unless
 // A_CRON=on on the Worker. Does not run runCron in the front isolate (#714).
 
+import { pullIn } from './alarm-arm.mjs';
+
 export const CRON_OBJECT_NAME = 'cron';
 export const CRON_TICK_PATH = '/_cron-tick';
 export const CRON_TICK_HEADER = 'x-pf-cron-tick';
@@ -114,4 +116,38 @@ export function cronBuildState({ worker, cron, alarm }) {
 	if (cron !== worker) return 'object-stale';
 	if (alarm !== worker) return 'legs-stale';
 	return 'ok';
+}
+
+// #1360: deploy.sh wakes the cron object once after the upload, so an idle alarm parked up to IDLE_MAX_MS ahead
+// (cron-idle.mjs) fires now instead of at that parked time. The route only sets the alarm. The object's own alarm
+// runs the tick, on the build that alarm starts.
+export const CRON_WAKE_PATH = '/_cron-wake';
+export const CRON_WAKE_HEADER = 'x-pf-cron-wake';
+
+/** 'off' answers and does not call the object. 'wake' asks the object to pull its alarm in. */
+export function cronWakeRoute(env) {
+	if (!approachACronEnabled(env) || !env.PHP_RUNTIME) return 'off';
+	return 'wake';
+}
+
+/**
+ * Pull the cron alarm in to now, through pullIn (interval 0). Idempotent: an alarm already at or before now, or none,
+ * is left as pullIn leaves it. This does not run a cron leg.
+ */
+export async function wakeCronAlarm(storage, now) {
+	const r = await pullIn(storage, now, 0, 'cron-wake');
+	const at = await storage.getAlarm();
+	return {
+		ok: true,
+		pulled: r.pulled === true,
+		at: at === null || at === undefined ? null : Number(at),
+		was: r.pulled ? Number(r.was) : null,
+	};
+}
+
+/** The cron object's answer. No token, or not this wake: the existing 403. Cron off: the alarm is not touched. */
+export async function cronObjectWake({ env, storage, now, method, wakeHeader, spikeOk }) {
+	if (method !== 'POST' || wakeHeader !== '1' || !spikeOk) return { status: 403, body: null };
+	if (!approachACronEnabled(env)) return { status: 200, body: { ok: false, cron: 'off' } };
+	return { status: 200, body: await wakeCronAlarm(storage, now) };
 }

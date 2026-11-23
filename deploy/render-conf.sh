@@ -5,6 +5,8 @@
 # defines out() (a Terraform output by name), and runs this from $APP.
 # shellcheck source=SCRIPTDIR/object-time.sh
 . "$(dirname "${BASH_SOURCE[0]}")/object-time.sh"
+# shellcheck source=SCRIPTDIR/db-query-timeout.sh
+. "$(dirname "${BASH_SOURCE[0]}")/db-query-timeout.sh" # #1364
 # shellcheck source=SCRIPTDIR/fault-inject.sh
 . "$(dirname "${BASH_SOURCE[0]}")/fault-inject.sh"
 # shellcheck source=SCRIPTDIR/page-cache-ttl.sh
@@ -58,6 +60,14 @@ render_conf() {
   # #1258: refuse DEV_LOCAL, the local spike token, and the three seam vars
   # before any line is written. deploy.sh checks the same function first.
   wp_cli_local_seam_check || return 2
+  # #1364: the per-query bound is approach A only. A bad value stops the render
+  # before any line is written. Unset writes nothing (the engine's 30 s).
+  if [ "$VARIANT" = a ]; then
+    db_query_timeout_check || return 2
+  elif [ -n "${DB_QUERY_TIMEOUT_MS:-}" ]; then
+    echo "DB_QUERY_TIMEOUT_MS is for variant a only, not $VARIANT" >&2
+    return 2
+  fi
   # RENDER_WFP=1 (#1319): deploy/wfp's kind a site, the user Worker RENDER_SCRIPT (site-<name>) in the dispatch
   # namespace. The same lines as deploy.sh renders for variant a, with three differences: no workers_dev (a
   # namespace script has none), no [triggers] (a Cron Trigger never fires on a namespace script, measured on #1310;

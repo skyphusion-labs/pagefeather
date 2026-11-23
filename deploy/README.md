@@ -185,6 +185,8 @@ VARIANT=a MYSQL=vultr VULTR_API_KEY=... MYSQL_ZONE_ID=<zone> MYSQL_HOST=mysql-my
 
 `MYSQL=vultr` makes the database box with `deploy/mysql` (MariaDB with SSL; port 3306 open to Cloudflare's IPv4 ranges only; no SSH; $10 a month). `MYSQL=external` uses your own server: `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`. A public server must have SSL. For a server behind a Cloudflare Tunnel and Access (CR #141, `tests/ssh-source`), set `MYSQL_ACCESS_CLIENT_ID` and `MYSQL_ACCESS_CLIENT_SECRET` instead: Hyperdrive reaches it with the service token, the box opens no inbound port, and no SSL is needed. Give Hyperdrive the host **name**: by IP address it measured about 44 ms per query, by name about 7 ms ([docs/approach-a.md](../docs/approach-a.md)). On Workers Free this variant stops at the CPU limit.
 
+After the upload, `deploy.sh` calls `/_cron-wake` once (spike token) to pull the cron object's alarm in to now, then reads `/_cron-build` for up to 10 minutes and warns if that alarm has not run the new build (#1354, #1152); a failed wake does not fail the deploy (#1360).
+
 ### Variant `a`: the measured site (#666)
 
 A plain `VARIANT=a` deploy is the approach-A site that every #296 run measured. Before #666, deploy.sh rendered none of these settings, so the measured site could only be deployed with a hand-made config. `deploy/tests/a-render-test.sh` diffs deploy.sh's render against that bench config (`deploy/tests/a-render/`), so the two cannot drift apart again.
@@ -260,7 +262,7 @@ On approach A (Hyperdrive), each MySQL query is bounded.
 
 | setting | default | what it bounds |
 |---|---|---|
-| `DB_QUERY_TIMEOUT_MS` | `30000` | How long one query may take, in milliseconds (1 to 600,000). |
+| `DB_QUERY_TIMEOUT_MS` | `30000` (unset renders nothing; the engine default stands) | How long one query may take, in milliseconds. Digits only, 1 to 600,000. Rendered when set, on variant `a`, on `deploy/wfp` kind a, and on one-click. A bad value stops the deploy and names this setting. Recorded: a later deploy that leaves it out is refused as a difference. |
 
 **On the bound:**
 - the connection is destroyed and never reused;
@@ -275,7 +277,7 @@ On approach A (Hyperdrive), each MySQL query is bounded.
 
 **Why 30 s:** in three full WooCommerce suite runs (12,175 requests), no request came near it. The highest average per query in any request was 214 ms. The longest requests (product batches, 46 to 49 s of database time) are thousands of queries of about 14 ms each. Those totals cannot rule out one long query inside a batch, which is why the bound can be raised.
 
-**Setting it:** the Worker reads `DB_QUERY_TIMEOUT_MS` as a plain variable. `deploy.sh`, `deploy/wfp` and the one-click provisioner do not render it yet, so a site runs the 30 s default until they do (#1359).
+**Setting it:** set `DB_QUERY_TIMEOUT_MS` to the number of milliseconds (digits only, 1 to 600,000). `deploy.sh` (variant `a`), `deploy/wfp` (kind a) and one-click render it as a plain variable. Unset renders nothing, so the engine's 30 s default stands. A value outside that range stops the deploy and names `DB_QUERY_TIMEOUT_MS`. The value is recorded with the site's other inputs. A later deploy that leaves it out is refused as a difference (`REPLACE_INPUTS=1` replaces the record on purpose; on `deploy/wfp`, `DROP_SETTINGS=DB_QUERY_TIMEOUT_MS` drops it).
 
 ## When a PHP object does not answer in time (#703, #708)
 

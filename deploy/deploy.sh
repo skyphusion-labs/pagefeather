@@ -422,6 +422,7 @@ fi
 # #734: OBJECT_CACHE_VERSIONS is on by default for variant a; its versions table is installed here and read back.
 if [ "$VARIANT" = a ] && [ "${OBJECT_CACHE_VERSIONS:-1}" != 0 ]; then a_ocv_install "$URL" "$SPIKE_TOKEN" || exit 1; fi
 # #1152: did the cron object (A_CRON=1) move to this build? A WARNING if not within CRON_VERSION_WAIT_S; never a failure.
+# #1360: that readback wakes the cron alarm once first (/_cron-wake). A failed wake never fails the deploy.
 cron_version_readback "$URL" "$SPIKE_TOKEN"
 
 PW_HINT="(admin; password: cd deploy/terraform && terraform workspace select $NAME && terraform output -raw admin_password)"

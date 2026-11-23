@@ -18,7 +18,7 @@ On Workers Free, the shop, the cart, and checkout work. Editing a WooCommerce st
 
 One Durable Object holds the site. That is one Cloudflare object, and it keeps the site's state. Work the cache cannot answer runs at about 5 requests a second. Past that, the queue grows, and at about 100 clients the object is overloaded and refuses the request ([What sets b-dosql's limit](../perf-dosql.md#what-sets-b-dosqls-limit)).
 
-WooCommerce on this path is a light storefront. A real store uses approach A, with Hyperdrive and your own MySQL. Under load the site's one object runs out of memory and resets, and a write in flight can be lost ([WooCommerce on b-dosql: isolates reset under load, a tracked limit (#1022)](limits.md#woocommerce-on-b-dosql-isolates-reset-under-load-a-tracked-limit-1022)).
+WooCommerce on this path is a light storefront. A real store uses approach A, with Hyperdrive and your own MySQL. Under load the site's one object runs out of memory and resets, and a write in flight can be lost ([WooCommerce on b-dosql: isolates reset under load, a tracked limit (#1022)](limits.md#woocommerce-on-the-built-in-database-option-the-site-resets-under-heavy-load-a-tracked-limit-1022)).
 
 ### Many sites
 
@@ -36,7 +36,7 @@ This path runs on Workers Paid, at $5 a month ([Plan limits and cost](cost.md)).
 
 This path does not run on Workers Free. The installer stops at the 10 ms CPU limit ([Plan limits](cost.md#plan-limits)).
 
-The figure that binds a site is the write ceiling, 117 to 119 MiB of wasm ([Memory limits: the three figures](limits.md#memory-limits-the-three-figures)). On a blocks checkout, the order POST takes 9.3 to 11.8 s ([WooCommerce checkout on Hyperdrive is slow](limits.md#woocommerce-checkout-on-hyperdrive-is-slow-1218-1210)).
+The figure that binds a site is the write ceiling, 117 to 119 MiB of wasm ([Memory limits: the three figures](limits.md#memory-limits-the-three-figures)). On a blocks checkout, the order POST takes 9.3 to 11.8 s ([WooCommerce checkout on Hyperdrive is slow](limits.md#woocommerce-checkout-is-slow-on-the-mysql-option-1218-1210)).
 
 ## The manual for your path
 

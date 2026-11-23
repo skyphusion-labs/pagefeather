@@ -106,6 +106,7 @@ jobs:
           bash deploy/tests/media-guard-test.sh
           bash deploy/tests/cron-schedules-test.sh
           bash deploy/tests/recorded-inputs-test.sh
+          bash deploy/tests/db-query-timeout-test.sh
           bash deploy/tests/custom-domain-test.sh
           bash deploy/tests/cron-version-readback-test.sh
           bash spikes/b2-wordpress/tests/trace-filter-test.sh
@@ -589,6 +590,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/cron-bound.test.mjs
       - name: "Approach A cron: a cron object on another build than the tick's resets itself at a leg start, at most once per 10 min (#1152)"
         run: node --test spikes/b2-wordpress/tests/cron-version.test.mjs
+      - name: "Approach A cron: a deploy wake pulls the cron alarm in to now and does not run a leg (#1360)"
+        run: node --test spikes/b2-wordpress/tests/cron-wake.test.mjs
       - name: "Every email send is timed: email-sent and email-send-failed carry ms (#1135)"
         run: node --test spikes/b2-wordpress/tests/email-send-timing.test.mjs
       - name: "Approach A cron: a leg runs due actions to a time budget and a heap stop, not one a leg (#1120)"
@@ -727,6 +730,7 @@ jobs:
           node deploy/provision/tests/memory-reuse-provision-test.mjs
           node deploy/provision/tests/page-cache-product-test.mjs
           node deploy/provision/tests/object-time-test.mjs
+          node deploy/provision/tests/db-query-timeout-test.mjs
           node deploy/provision/tests/a-cache-inputs-test.mjs
           node deploy/provision/tests/wp-site-config-test.mjs
           node deploy/provision/tests/descriptor-table-test.mjs
