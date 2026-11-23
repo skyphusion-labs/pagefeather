@@ -276,14 +276,15 @@ def main():
     t = tempfile.mkdtemp(prefix="conf-runner.")
     try:
 
-        def case(label, why, suite_name="wc", cache="on", setup=None, env_extra=None, expect_rc=3):
+        def case(label, why, suite_name="wc", cache="on", setup=None, env_extra=None, expect_rc=3, extra=()):
             s = Stub()
             if setup:
                 setup(s)
             env = {"WP_USERNAME": "admin", "WP_PASSWORD": s.password, "CUSTOMER_PASSWORD": s.customer_pw, "PATH": os.environ.get("PATH", "")}
             env.update(env_extra or {})
             rd = os.path.join(t, "run-" + re.sub(r"\W+", "-", label))
-            rc, o, e = run(["prepare", "--suite", suite_name, "--base-url", s.url, "--cache", cache, "--run-dir", rd], env)
+            rc, o, e = run(["prepare", "--suite", suite_name, "--base-url", s.url, "--cache", cache, "--run-dir", rd] + list(extra), env)
+            case.last_out = o
             s.close()
             writes = [c for c in s.calls if c[0] == "POST" and c[1] != "/wp-login.php"]
             if writes:
@@ -329,6 +330,28 @@ def main():
              setup=lambda s: (setattr(s, "cache", "DYNAMIC"), setattr(s, "stamp", "same")))
         case("cache on, EXPIRED with the same stamp is served (#1336)", None,
              setup=lambda s: (setattr(s, "cache", "EXPIRED"), setattr(s, "stamp", "same")), expect_rc=0)
+        # #1277 round 2 arm (a), the lead's ruling: --cache on-unverified runs the check, logs it loudly and does not stop on
+        # "no stored body served", ONLY for a run labelled arm (a). Any other arm, or none, is refused before the site is touched.
+        s, _ = case("on-unverified with no arm label is refused", r"on-unverified is only for #1277 arm \(a\)", cache="on-unverified")
+        if s.calls:
+            bad("on-unverified refusal: the site was contacted %d times" % len(s.calls))
+        else:
+            ok("on-unverified refusal: the site was never contacted")
+        case("on-unverified for arm (b) is refused", r"on-unverified is only for #1277 arm \(a\)", cache="on-unverified", extra=("--arm", "b"))
+        s, rd = case("on-unverified for arm (a): a new render each time is logged, not stopped", None, cache="on-unverified",
+                     extra=("--arm", "a"), setup=lambda s: (setattr(s, "cache", "EXPIRED"), setattr(s, "stamp", "new")), expect_rc=0)
+        if re.search(r"UNVERIFIED.*no stored body was served", case.last_out):
+            ok("on-unverified: the UNVERIFIED line names the failed check")
+        else:
+            bad("on-unverified: no loud UNVERIFIED line in the output")
+        envf = os.path.join(rd, "env")
+        txt = open(envf).read() if os.path.exists(envf) else ""
+        if "PF_CONFORMANCE_CACHE=on-unverified" in txt and "PF_CONFORMANCE_ARM=a" in txt and "PF_CONFORMANCE_CACHE_SERVED=no" in txt:
+            ok("on-unverified: the run record carries the mode, the arm and the result")
+        else:
+            bad("on-unverified: the run record does not carry PF_CONFORMANCE_CACHE=on-unverified, PF_CONFORMANCE_ARM=a and PF_CONFORMANCE_CACHE_SERVED=no")
+        case("on-unverified for arm (a) with no stamp at all still stops", r"could not measure.*x-pf-rendered", cache="on-unverified",
+             extra=("--arm", "a"), setup=lambda s: setattr(s, "stamp", "none"))
         # Basic auth (#761).
         case("Basic always 401 (#761)", r"returned 401, not 200.*#761", setup=lambda s: setattr(s, "basic", "always401"))
         case("Basic ignores the password", r"WRONG password returned 200, not 401", setup=lambda s: setattr(s, "basic", "ignores"))

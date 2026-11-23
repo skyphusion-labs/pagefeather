@@ -2,6 +2,7 @@
 """The conformance runner of #759: the upstream browser suites against a THROWAWAY site.
 
     runner.py prepare --suite wp|wc|wc-api|gb --base-url https://<site> --cache on|off --run-dir <dir>
+        (--cache on-unverified --arm a: #1277 round 2 arm (a) only; the check is logged, not enforced)
     runner.py config  --suite wp|wc|wc-api|gb --suite-dir <upstream e2e dir> --run-dir <dir> [--stock]
     runner.py check-state --base-url https://<site> --state <storage state json> [--state ...]
     runner.py summarize --report <playwright json> --out <results.json>
@@ -164,17 +165,23 @@ def check_cache(site, want):
     served = any(stamps[i] != "-" and stamps[i] in stamps[:i] for i in range(1, len(stamps)))
     say("page cache: guest GET / x3 -> cf-cache-status %s; x-pf-rendered %s; a stored body served: %s"
         % (",".join(seen), ",".join(stamps), "yes" if served else "no"))
-    if want == "on":
+    if want in ("on", "on-unverified"):
         if all(x == "-" for x in stamps):
-            raise Stop("--cache on: could not measure, no x-pf-rendered on any of 3 guest fetches of / (%s); the "
-                       "stamp is how a served body is told from a render (#1336)" % ",".join(seen))
-        if not served:
+            raise Stop("--cache %s: could not measure, no x-pf-rendered on any of 3 guest fetches of / (%s); the "
+                       "stamp is how a served body is told from a render (#1336)" % (want, ",".join(seen)))
+        if not served and want == "on-unverified":
+            # #1277 round 2 arm (a), the lead's ruling: the control is #1296 as merged, which serves no stored guest copy by
+            # design. The check still runs; its failure is logged loudly and recorded in the run's env, and the run goes on.
+            say("UNVERIFIED (#1277 arm (a) only): --cache on-unverified, and no stored body was served in 3 guest fetches "
+                "of /: every x-pf-rendered differs (%s; cf-cache-status %s). This run is NOT a verified cache-on run."
+                % (",".join(stamps), ",".join(seen)))
+        elif not served:
             raise Stop("--cache on, but no stored body was served in 3 guest fetches of /: every x-pf-rendered differs "
                        "(%s; cf-cache-status %s) (#1336)" % (",".join(stamps), ",".join(seen)))
     if want == "off" and (served or "HIT" in seen):
         raise Stop("--cache off, but the page cache answered (%s; x-pf-rendered %s): deploy with PAGE_CACHE_TTL=0"
                    % (",".join(seen), ",".join(stamps)))
-    return seen
+    return seen, served
 
 
 WC_BLOGNAME = "WooCommerce Core E2E Test Suite"
@@ -288,6 +295,10 @@ def write_env(run_dir, pairs):
 
 
 def cmd_prepare(a):
+    # #1277 round 2: on-unverified is refused before the site is touched unless the run is labelled arm (a).
+    if a.cache == "on-unverified" and a.arm != "a":
+        raise Stop("--cache on-unverified is only for #1277 arm (a) (pass --arm a); got --arm %s. Every other run uses "
+                   "--cache on, the #1336 guard" % (a.arm or "none"))
     user, password = os.environ.get("WP_USERNAME", "admin"), os.environ.get("WP_PASSWORD")
     if not password:
         raise Stop("WP_PASSWORD is not set (the admin account password)")
@@ -297,7 +308,7 @@ def cmd_prepare(a):
     say("admin: form login and REST nonce ok")
     if a.suite in ("wp", "gb"):
         editor_welcome_verify(site)
-    cache = check_cache(site, a.cache)
+    cache, served = check_cache(site, a.cache)
     pairs = [("WP_BASE_URL", site.base), ("WP_USERNAME", user)]
     if a.suite in ("wc", "wc-api", "wc-cpt"):
         cuser, cust, admin_email = wc_verify(site, user, password)
@@ -306,7 +317,10 @@ def cmd_prepare(a):
     else:
         pairs += [("WP_PASSWORD", password)]
     pairs += [("PF_CONFORMANCE_SUITE", a.suite), ("PF_CONFORMANCE_CACHE", a.cache),
-              ("PF_CONFORMANCE_CACHE_SEEN", ",".join(cache))]
+              ("PF_CONFORMANCE_CACHE_SEEN", ",".join(cache)),
+              ("PF_CONFORMANCE_CACHE_SERVED", "yes" if served else "no")]
+    if a.arm:
+        pairs += [("PF_CONFORMANCE_ARM", a.arm)]
     if a.suite in ("wp", "gb"):
         artifacts, storage = conformance_artifact_paths(a.run_dir)
         os.makedirs(os.path.dirname(storage), exist_ok=True)
@@ -653,7 +667,9 @@ def main(argv=None):
     p = sub.add_parser("prepare")
     p.add_argument("--suite", choices=("wp", "wc", "wc-api", "wc-cpt", "gb"), required=True)
     p.add_argument("--base-url", required=True)
-    p.add_argument("--cache", choices=("on", "off"), required=True)
+    p.add_argument("--cache", choices=("on", "off", "on-unverified"), required=True,
+                   help="on: the #1336 guard (a stored body must be served); off: none may be; on-unverified: #1277 arm (a) only")
+    p.add_argument("--arm", help="the #1277 experiment arm this run is (a, b, c); required for --cache on-unverified, which only arm a may use")
     p.add_argument("--run-dir", required=True)
     p = sub.add_parser("config")
     p.add_argument("--suite", choices=("wp", "wc", "wc-api", "wc-cpt", "gb"), required=True)
