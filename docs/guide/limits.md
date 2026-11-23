@@ -127,6 +127,22 @@ oEmbed of the site's own posts and pages is NOT a self-fetch: core resolves it i
 
 **Measured so far:** the decision path only, in `tests/url-details-self-test.php` (23 checks) and `tests/self-fetch.test.mjs`. 16 mutants of the guards each turn one of them red. The live proof on `cf759hw` (pool off) and the two gb navigation specs ("can update page link to a new page link" and "Focus management when using the navigation link appender") are on #1157.
 
+## A new tag added just before Publish can be lost when the site answers slowly (#1403)
+
+**What you see:** in the block editor, you type a NEW tag (one that does not exist yet), press Enter, and click Publish at once. The tag shows in the Tags box, but after a reload the post has no tag. The tag itself was created. Only the post did not get it.
+
+**Why:** the editor does not wait for a new tag to be created before it saves the post. This is upstream Gutenberg behaviour, not something our site adds. At the pinned Gutenberg (`89408c2b`, the one WordPress 7.1.5 ships):
+
+- The Tags box shows the new tag at once ("Optimistically update term values", [flat-term-selector.js](https://github.com/WordPress/gutenberg/blob/89408c2b9bd944575dfa9039bc6870da1c8f56cb/packages/editor/src/components/post-taxonomies/flat-term-selector.js#L205-L237)). It adds the tag's id to the post only when the create call answers (`Promise.all(... findOrCreateTerm ...).then(... onUpdateTerms ...)`).
+- Nothing there locks saving while that call runs (no `lockPostSaving`).
+- `savePost` saves the edits it has at that moment ([actions.js](https://github.com/WordPress/gutenberg/blob/89408c2b9bd944575dfa9039bc6870da1c8f56cb/packages/editor/src/store/actions.js#L187-L230)).
+
+So whichever answers first wins. On stock WordPress on a local server, the tag create answers in milliseconds, so the tag is in place before Publish. On our sites a REST call takes about half a second (#1078). In #1201's runs, the publish began 160 ms before the tag create answered, and the post was saved without the tag.
+
+**Measured:** the upstream test `taxonomies.spec.js` "should be able to open the tags panel and create a new tag" failed 4 of 4 on the WfP built-in database site `cf759a`. It passed on stock, and it passed on `cf759hw` ([evidence](https://github.com/skyphusion-labs/pagefeather/issues/1403)).
+
+**What to do:** after you add a new tag, wait until the editor has finished saving it (about a second) before you click Publish. Or check the Tags box after the first save, and save again if the tag is missing. Tags that already exist are not affected: their ids are known at once.
+
 ## Permalinks: a structure saved with /index.php stays until you re-save it (#1345)
 
 Before #1345, WordPress on this engine believed that URL rewriting was not available. So Settings, Permalinks offered every structure with an `/index.php` prefix: choosing "Post name" saved `/index.php/%postname%/`, not `/%postname%/`. The engine has always sent every path that is not a file to `index.php`, so pretty permalinks without `/index.php` do work. Since #1345, the screen offers them, as on a stock Apache or nginx host.
