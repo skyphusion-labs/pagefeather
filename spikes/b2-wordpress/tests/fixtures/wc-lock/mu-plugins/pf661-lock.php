@@ -3,7 +3,7 @@
  * Plugin Name: #661 test fixture: WooCommerce's install lock (TEST BUILDS ONLY)
  * Imported only by tests/wc-install-lock-e2e.sh (IMPORT_CONTENT=tests/fixtures/wc-lock IMPORT_MU_PLUGINS=pf661-lock.php);
  * never part of a site build. It answers only a request carrying x-oc-off, which index.js deletes before PHP unless
- * the request has a VALID spike token (handle(): "if (!spikeOk) delete headers['x-oc-off']"); PHP cannot check the
+ * the request has a VALID spike token (handle() calls stripOperatorHeaders, operator-headers.mjs); PHP cannot check the
  * token itself. Both answer on plugins_loaded at priority 0, BEFORE init, so WooCommerce's check_version (init,
  * priority 5) does not run in the fixture's own request.
  *   GET /?pf661_plant=<age s>  writes wc_installing = now - age: the lock a first activation that died mid-install leaves.

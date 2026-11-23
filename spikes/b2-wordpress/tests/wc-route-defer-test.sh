@@ -16,6 +16,7 @@ ok "13 mapped callbacks, each once" "$([ "$n" = 13 ] && [ "$u" = 13 ] && echo 1 
 ok "no settings or fields callback is deferred (Checkout, ProductCollection, ShippingController, WCAdminUser stay eager)" "$(sed -n '/const DEFER = array(/,/);/p' "$P" | grep -qE 'register_settings|ProductCollection|register_user_data' && echo 0 || echo 1)"
 ok "the scope is the editor screens, admin.php, admin-ajax, and a REST path (#963, #987, #994)" "$(grep -q "in_array( \$pagenow, array( 'post-new.php', 'post.php', 'admin.php' ), true )" "$P" && grep -A2 "if ( wp_doing_ajax() )" "$P" | grep -q "return true;" && grep -q "return self::rest_defers_uri" "$P" && echo 1 || echo 0)"
 ok "build.sh ships it" "$(grep -q 'php/wc-route-defer.php' "$HERE/build.sh" && echo 1 || echo 0)"
-ok "index.js passes x-pf-wc-defer to PHP only with the spike token" "$(grep -q "delete headers\['x-pf-wc-defer'\]" "$HERE/index.js" && echo 1 || echo 0)"
+defer_strip=$(cd "$HERE" && node --input-type=module -e "import { stripOperatorHeaders } from './operator-headers.mjs'; const off = stripOperatorHeaders({ 'x-pf-wc-defer': 'off', x_pf_wc_defer: 'off' }, false); const on = stripOperatorHeaders({ 'x-pf-wc-defer': 'off' }, true); process.stdout.write(Object.keys(off).length === 0 && on['x-pf-wc-defer'] === 'off' ? '1' : '0');" 2>/dev/null || echo 0)
+ok "index.js passes x-pf-wc-defer to PHP only with the spike token (stripOperatorHeaders removes every spelling without it)" "$([ "$defer_strip" = 1 ] && grep -q "stripOperatorHeaders(headers, spikeOk);" "$HERE/index.js" && echo 1 || echo 0)"
 echo "$fails failing case(s)"
 exit $((fails > 0))

@@ -68,6 +68,7 @@ import { withDbRun } from './db-lifecycle.mjs';
 import { isVersionedKey, l1ExpFor } from './oc-l1.mjs';
 import { aPerfLine, r2OpsSnapshot, r2OpsDelta } from './perf-line.mjs';
 import { serveUpload } from './upload-scope.mjs';
+import { stripOperatorHeaders } from './operator-headers.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
@@ -5226,13 +5227,9 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			}
 			const headers = {};
 			req.headers.forEach((v, k) => (headers[k] = v));
-			// The AST-cache per-request bypass (issue #173) is honored only with a
-			// valid spike token, so a visitor cannot disable the cache in production.
-			if (!spikeOk) delete headers['x-ast-cache-off'];
-			if (!spikeOk) delete headers['x-oc-off'];
-			// The memory trace and its switches (#434) reach PHP only with a valid spike token.
-			if (!spikeOk) { delete headers['x-mem-trace']; delete headers['x-mem-off']; }
-			if (!spikeOk) delete headers['x-pf-wc-defer']; // #768: the deferral's operator A/B switch (php/wc-route-defer.php)
+			// The operator switches PHP reads (the AST-cache bypass #173, the object cache off, the memory trace and its
+			// switches #434, the WooCommerce deferral A/B #768) reach PHP only with a valid spike token (operator-headers.mjs).
+			stripOperatorHeaders(headers, spikeOk);
 			let body;
 			if (env.MEDIA && isMediaUpload(req, url) && Number(req.headers.get('content-length') || 0) > STAGE_MIN_BYTES) {
 				const staged = await stageUpload(req, env);
