@@ -145,5 +145,36 @@ except SystemExit as e:
 check("create: a box with a v6_main_ip FAILS", got, "refused")
 check("create: and that box and its firewall are destroyed", (sorted(cs["instances"]), sorted(cs["firewalls"])), ([], []))
 cv.shutdown()
+# 6. BOX_PUBLIC_KEYS (#1405): every creds value is checked unless its key is named as a public identifier. No name
+# pattern decides it, so a secret under an unexpected name (DATABASE_URL with a password in it) is still checked.
+cf = os.path.join(tempfile.mkdtemp(), "creds.env")
+open(cf, "w").write("export CLOUDFLARE_API_TOKEN=tok-zq7-fixture-alpha\nMYSQL_USER=pf1327e\nMYSQL_DATABASE='pf1327e_wp'\n"
+                    "DATABASE_URL=mysql://u:pw-zq7-fixture@h/db\n")
+vals, absent = box.creds_values(cf, public="MYSQL_USER MYSQL_DATABASE ACCOUNT_ID")
+check("public keys: a listed key's value is exempt", ("pf1327e" in vals, "pf1327e_wp" in vals), (False, False))
+check("public keys: an unlisted key is still checked, an odd name included", ("tok-zq7-fixture-alpha" in vals, "mysql://u:pw-zq7-fixture@h/db" in vals), (True, True))
+check("public keys: a listed key absent from the file is reported", absent, ["ACCOUNT_ID"])
+vals0, _ = box.creds_values(cf, public="")
+check("public keys: unset or empty keeps every value checked", sorted(vals0), sorted(["tok-zq7-fixture-alpha", "pf1327e", "pf1327e_wp", "mysql://u:pw-zq7-fixture@h/db"]))
+job_names_site = "SITE=pf1327e\necho $SITE\n"
+try:
+    box.build_userdata(job_names_site, puts={}, get="https://r2/get?sig", secrets=vals); got = "built"
+except box.SecretInUserData:
+    got = "refused"
+check("public keys: a job that names the site (= MYSQL_USER) builds once MYSQL_USER is listed", got, "built")
+try:
+    box.build_userdata("echo " + "mysql://u:pw-zq7-fixture@h/db" + "\n", puts={}, get=None, secrets=vals); got = "built"
+except box.SecretInUserData:
+    got = "refused"
+check("public keys: a DATABASE_URL in the job is still refused", got, "refused")
+
+# 7. HOME (#1405): cloud-init runs user-data with no HOME; a set -u job that reads it must not stop.
+ud = box.build_userdata("echo $HOME\n", puts={}, get=None, secrets=[])
+lines = ud.split("\n")
+hi = next((i for i, l in enumerate(lines) if l.strip() == "export HOME=/root"), None)
+ji = next((i for i, l in enumerate(lines) if "base64 -d > /root/job.sh" in l), None)
+check("HOME: the user-data exports HOME=/root before the job", hi is not None and ji is not None and hi < ji, True)
+envrun = subprocess.run(["env", "-i", "PATH=/usr/bin:/bin", "bash", "-c", "set -u; " + lines[hi] + "; echo \"[$HOME]\""], capture_output=True, text=True)
+check("HOME: under env -i and set -u, that line gives a HOME", envrun.stdout.strip(), "[/root]")
 print("%d failing check(s)" % fails)
 sys.exit(1 if fails else 0)

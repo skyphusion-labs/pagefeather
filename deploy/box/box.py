@@ -13,7 +13,8 @@ to R2 at the end) and may read /root/creds.env (present only with --creds, after
 presigned urls: build_userdata refuses it if any creds value, or its base64, is in it (the user-data stays readable from
 the Vultr API and the instance metadata for the box's whole life).
 
-Environment: VULTR_API_KEY; BOX_R2_ENDPOINT, BOX_R2_BUCKET, BOX_R2_KEY_ID, BOX_R2_SECRET (an R2 S3 key for the results
+Environment: VULTR_API_KEY; BOX_CREDS_FILE (every value is checked against the user-data) and BOX_PUBLIC_KEYS (names of
+its keys that are identifiers, exempt; #1405); BOX_R2_ENDPOINT, BOX_R2_BUCKET, BOX_R2_KEY_ID, BOX_R2_SECRET (an R2 S3 key for the results
 bucket); BOX_REGION (lax), BOX_PLAN (vhf-3c-8gb). State (ids) goes to $BOX_STATE_DIR (default ~/scratch/box/<run>).
 """
 import base64, json, os, sys, time, urllib.error, urllib.parse, urllib.request
@@ -59,6 +60,8 @@ def build_userdata(job_script, puts, get, secrets, outputs_note=True):
         "#!/bin/bash",
         "# deploy/box user-data (#1327): presigned urls only, no credential.",
         "exec > /root/box.log 2>&1",
+        "# cloud-init runs user-data with no HOME; a set -u job that reads it would stop (#1405).",
+        "export HOME=/root",
         "declare -A PUT=( %s )" % puts_decl,
         'put() { [ -n "${PUT[$2]:-}" ] || { echo "no put url for $2"; return 0; }; curl -fsS --retry 3 -T "$1" "${PUT[$2]}" > /dev/null || echo "put failed: $2"; }',
         'mark() { date -u +%FT%TZ > /root/.m; put /root/.m "$1"; }',
@@ -189,13 +192,23 @@ def _state(run):
     return d
 
 
-def _creds_values(path):
-    out = []
+def creds_values(path, public=""):
+    """The values of a creds file that the user-data check must refuse, and the public keys it did not find.
+    Fail closed: every value is checked, unless its key is named in `public` (BOX_PUBLIC_KEYS: space-separated names of
+    known identifiers, such as MYSQL_USER MYSQL_DATABASE ACCOUNT_ID MYSQL_HOST). No name pattern decides it, because a
+    secret can sit under any name (a DATABASE_URL with a password in it). Returns (values, listed keys absent from the file)."""
+    pub = set(public.split())
+    vals, seen = [], set()
     for line in open(path):
         line = line.strip()
+        if line.startswith("export "):
+            line = line[7:].lstrip()
         if line and not line.startswith("#") and "=" in line:
-            out.append(line.split("=", 1)[1].strip().strip("'\""))
-    return out
+            k, v = line.split("=", 1)
+            k = k.strip(); seen.add(k)
+            if k not in pub:
+                vals.append(v.strip().strip("'\""))
+    return vals, sorted(pub - seen)
 
 
 def main(argv):
@@ -211,7 +224,12 @@ def main(argv):
         names = list(MARKERS) + ["box.log"] + ["out/" + n for n in os.environ.get("BOX_OUTPUTS", "").split() if n]
         puts = {n: st.presign("PUT", "%s/%s" % (key, n), exp) for n in names}
         get = st.presign("GET", "%s/creds.env" % key, exp) if want_creds else None
-        secrets = [os.environ["BOX_R2_SECRET"], os.environ["VULTR_API_KEY"]] + (_creds_values(os.environ["BOX_CREDS_FILE"]) if os.environ.get("BOX_CREDS_FILE") else [])
+        creds_vals = []
+        if os.environ.get("BOX_CREDS_FILE"):
+            creds_vals, absent = creds_values(os.environ["BOX_CREDS_FILE"], os.environ.get("BOX_PUBLIC_KEYS", ""))
+            if absent:
+                print("note: BOX_PUBLIC_KEYS names %s, not in BOX_CREDS_FILE" % " ".join(absent), file=sys.stderr)
+        secrets = [os.environ["BOX_R2_SECRET"], os.environ["VULTR_API_KEY"]] + creds_vals
         ud = build_userdata(job, puts, get, secrets)
         r = create(Vultr(os.environ["VULTR_API_KEY"]), "pfbox-" + run, ud, os.environ.get("BOX_REGION", "lax"), os.environ.get("BOX_PLAN", "vhf-3c-8gb"))
         json.dump(r, open(os.path.join(d, "ids.json"), "w"))
