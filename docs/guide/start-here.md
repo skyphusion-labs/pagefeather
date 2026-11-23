@@ -126,10 +126,10 @@ Each line has its measured figure and a link to the evidence.
 - **You add plugins when you deploy.** Add `PLUGINS="slug slug"` to the step 4 command. You can use the 18 popular plugins that are already checked and pinned ([the list](../../tests/plugins/suite.txt)). Any other plugin has to be pinned first.
 - **Memory decides how many plugins fit, not a count.** A page fails at about 117 to 119 MiB of memory. A WordPress-only site uses about 81 MiB on its heaviest admin page, so it has room for several typical plugins ([how many plugins fit](limits.md#how-many-plugins-fit)).
 - **Some big plugins do not fit:** Yoast SEO, All in One SEO and Elementor are over the 64 MiB size limit, and Rank Math with WooCommerce runs out of memory ([how many plugins fit](limits.md#how-many-plugins-fit)).
-- **WooCommerce here is a light shop.** Under heavy load the site can reset, and a write in progress can be lost. For a real store, use the MySQL option ([details](limits.md#woocommerce-on-b-dosql-isolates-reset-under-load-a-tracked-limit-1022)).
+- **WooCommerce here is a light shop.** Under heavy load the site can reset, and a write in progress can be lost. For a real store, use the MySQL option ([details](limits.md#woocommerce-on-the-built-in-database-option-the-site-resets-under-heavy-load-a-tracked-limit-1022)).
 - **Busy traffic:** one site handles about 5 uncached requests a second. Cached pages cost nothing extra ([what sets the limit](../perf-dosql.md#what-sets-b-dosqls-limit)).
 - **A changed page can show its old copy for a while.** A visitor can see the old copy for up to 12 minutes in the worst case. Cloudflare allows 5 cache clears a minute per account, and a refused clear is tried again ([cache clears](../approach-b.md)).
 - **Email is off until you set it up.** A `workers.dev` address sends no email, so password-reset emails do not arrive. You need your own domain, set up for Cloudflare Email Sending, and `MAIL_FROM` ([mail](../../deploy/README.md#mail-for-b-dosql)).
-- **On the MySQL option only:** WooCommerce admin screens and bulk product edits are slow ([details](limits.md#woocommerce-admin-screens-and-bulk-product-edits-are-slow-on-hyperdrive-1078)).
+- **On the MySQL option only:** WooCommerce admin screens and bulk product edits are slow ([details](limits.md#woocommerce-admin-screens-and-bulk-product-edits-are-slow-on-the-mysql-option-1078)).
 
 Everything that does not work yet is on the [known limitations](limits.md) page.

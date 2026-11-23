@@ -1,12 +1,14 @@
 # Known limitations
 
-This page lists what does not work yet, or works only with care, so you can plan around it before you build. Each item names its issue, where you can follow it or help. The current paths still run: b-dosql for a blog or a light storefront, approach A on Hyperdrive for a real store and to scale out. The sb1120 items below are open limits on those paths. See the [docs map](../README.md).
+This page lists what does not work yet, or works only with care, so you can plan around it before you build. Each item names its issue, where you can follow it or help. The current paths still run: the built-in database option for a blog or a light storefront, and the MySQL option for a real store and to scale out. The sb1120 items below are open limits on those paths. See the [guide index](README.md).
+
+**Names on this page.** The built-in database option is `b-dosql`, and the MySQL option is approach A (MySQL through Hyperdrive). An **isolate** is one running copy of the site's code, with its own memory. The figures below are measured per isolate, so this page keeps the word.
 
 ## Open from the sb1120 conformance runs (#759)
 
-The rows are in [../results.md](../results.md), 2026-11-20 and 2026-11-21. The support matrix summary has the per-tier counts.
+The rows are in the results table ([evidence](../results.md)), 2026-11-20 and 2026-11-21. The support matrix summary has the per-tier counts.
 
-### A guest product page on a page-cache MISS on Hyperdrive was slow (#1277, open until measured end to end)
+### On the MySQL option, a guest product page that was not cached yet was slow (#1277, open until measured end to end)
 
 On `cf759hl`, 3 guest product pages on a page-cache MISS took 9 to 12 s at the browser, past the suite's 10 s wait. The render ran in the `Pages` isolate at the visitor's edge, far from the database: about 57 ms per query under load, against about 17 direct.
 
@@ -16,13 +18,13 @@ On `cf759hl`, 3 guest product pages on a page-cache MISS took 9 to 12 s at the b
 
 A MISS now renders in the `Pages` isolate again, as described above. A new hand-off must fix both before it merges. This item and #1328 stay open until then.
 
-### WooCommerce checkout on Hyperdrive is slow (#1218, #1210)
+### WooCommerce checkout is slow on the MySQL option (#1218, #1210)
 
 On `cf759hl` at main `822ab24`, 6 of 10 blocks checkout tests missed the suite's 10 s thank-you wait (#1210). The order POST took 9.3 to 11.8 s. The order was placed, and the page then answered 200. A query trace of one guest order showed 404 per-order transient DELETEs, 4.8 s of database time. #1206 added that cost.
 
 PR #1219 fixed that part (#1218, merged 2026-11-21): the engine sends a request's transient deletes as one statement at its end. On one counted order, 352 DELETE statements became 11 (row "#1219 counted probe"). On PR #1219's head, before the merge, 10 of 10 blocks checkout tests passed, and the order POST took 4.8 to 6.8 s (row "wc arm B 3"). The time that is left is database time, about 13 ms a query. That is still a slow checkout, and #1210 is closed. No full wc suite has run since the merge.
 
-### WooCommerce admin screens and bulk product edits are slow on Hyperdrive (#1078)
+### WooCommerce admin screens and bulk product edits are slow on the MySQL option (#1078)
 
 On a Hyperdrive store (approach A), WooCommerce admin screens and bulk product edits take seconds, not a fraction of a second. Plan for it if your staff edit many products at once.
 
@@ -43,11 +45,11 @@ On a Hyperdrive store (approach A), WooCommerce admin screens and bulk product e
   - WooCommerce's write loop and the scoring against the bar: [#1078, the levers](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083327101);
   - the templates-list fix, stopped at its pre-check: [#1078, the templates check](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083356454).
 
-### A database query is cut off after 30 s on Hyperdrive (#1359)
+### A database query is cut off after 30 s on the MySQL option (#1359)
 
 On approach A, one MySQL query may take at most 30 s (`DB_QUERY_TIMEOUT_MS`, default 30,000). Set `DB_QUERY_TIMEOUT_MS` to override it (digits only, 1 to 600,000). `deploy.sh`, `deploy/wfp` (kind a) and one-click render it when it is set. Leave it unset and the 30 s default stands. Past the bound, the query fails as a lost connection, and WordPress shows a database error for that request. In three full WooCommerce suite runs, no query came near it: the longest requests are thousands of short queries. The bound exists because a query that never answers holds the isolate's PHP lock, and every later request on that isolate is refused with a 503. **What it covers:** a query that never answers in a request that is still running (for example a Hyperdrive hang). **Not yet:** the case #1277 measured, where a client hangs up mid-request. If the platform stops that request's work, the bound cannot fire there either. That is being measured, and a second fix is planned (#1359). The bound and its reasons are in [the deploy README](../../deploy/README.md#when-a-database-query-does-not-answer-1359).
 
-### Order emails on Hyperdrive were late (#1215, fixed)
+### Order emails on the MySQL option were late (#1215, fixed)
 
 WooCommerce queues each order email. The approach A cron alarm ran those actions 12 to 122 s later, on `cf759hl` at main `822ab24` (row "wc email wait"). The suite polls for 30 s, so a send could miss that poll. A second miss on that run was the harness (#1216; PR #1217 fixed it, merged 2026-11-21).
 
@@ -57,7 +59,7 @@ PR #1224 fixed the delay (#1215, merged 2026-11-21): a queued email wakes the cr
 
 #1221 is closed. PR #1227 fixed it (merged 2026-11-21): the build now keeps the files that WooCommerce probes, so PHP sees them. A live check on `cf759p` after the merge found the notice on 0 of 3 WooCommerce admin pages, against 3 of 3 before (results.md row "#1227 live"). That is a live check, not a suite run: no conformance suite row tests the notice.
 
-### WooCommerce on b-dosql: isolates reset under load, a tracked limit (#1022)
+### WooCommerce on the built-in database option: the site resets under heavy load, a tracked limit (#1022)
 
 #1022 is open and is a tracked limit, not active work (Conrad's ruling, 2026-11-22). A real store should use approach A on Hyperdrive. On b-dosql, WooCommerce runs PHP in one Durable Object per site. Under load, that object's isolate runs out of memory and the platform resets it: "Durable Object's isolate exceeded its memory limit and was reset." A write in flight on that isolate can be lost (`x-write-loss`), and the client can see "Network connection lost."
 
@@ -89,7 +91,7 @@ The engine code on this path was the same in both suite windows, and they gave 5
 
 E6 is the last lever on this path. After it, b-dosql keeps WooCommerce for a light storefront, and the work moves to the Hyperdrive tiers.
 
-### Parallel REST reads can fail on b-dosql (#1042)
+### Parallel REST reads can fail on the built-in database option (#1042)
 
 #1042 is open. Parallel REST reads answer 503 with `x-sql-failure`. The same wc rows count that class: 2 tests on Paid DO, about 6 on WfP. No later wc row has re-run those tiers.
 
@@ -135,17 +137,9 @@ Before #1345, WordPress on this engine believed that URL rewriting was not avail
 
 **Why it matters:** under `/index.php/%postname%/`, a post whose slug is all digits (an untitled post gets its id as the slug) can answer 404. Its URL is read as a year archive, because WordPress only renames such slugs when `%postname%` comes first in the structure. Under `/%postname%/` the slug becomes `<id>-2`, and the post is served.
 
-## WP-CLI operator route (#1258)
+## The built-in database option
 
-`POST /_pf/wp-cli` is off unless `WP_CLI_ENDPOINT=on`. It needs Cloudflare Access and a custom domain (#1264, #1260). The #1260 Access application is not created by IaC yet. The wall cap is 25 s. One run at a time holds per isolate, not per site: on approach A many isolates can run a command at once. A command drops that isolate's warm runtime, so the next page request boots cold. After the wall the route answers 124, and `php.exit` drops the JS heap handle, but the in-flight `php.cli` keeps running until the command finishes. The next request is not held behind that run. On dosql-local an allowed command slowed by 8 s answered 124 in 0.980 s (`ms` 962), and the next command answered 124 in 0.808 s (`ms` 794). Turning the endpoint on adds `wp-cli.phar` (7,142,777 bytes, about 7 MB) to `site.zip`, against the 64 MiB Worker limit (the upload gate is 62 MiB). With the endpoint unset, the bundle does not contain the phar. Long jobs (search-replace, import) are refused until step 5. The allowlist is the code lock: WP-CLI ignores `DISALLOW_FILE_MODS`. `user_pass` and `user_activation_key` are never printed. The full limits are in [../spikes/wp-cli-1258.md](../spikes/wp-cli-1258.md).
-
-## b-dosql
-
-### Cold-start write can return 1101 under a test seam (#213)
-
-Under the `CRON_SIMULATE_COLD=1` test seam (a forced cold wake on every alarm), two runs right after a fresh redeploy hit a 1101 on an admin write (`create a product`). It was not seen in any warm run, and it does not happen with the seam off, which is production. The exact exception was never captured, and we treat it as low priority. If you see it in production, redeploy, then run `wrangler tail` while you repeat an admin write, to capture the error. Please add what you find to the issue.
-
-### Deactivating WooCommerce can return 500 on a warm isolate (#219)
+### Deactivating WooCommerce can return 500 on a site that has been running (#219)
 
 Deactivating WooCommerce in wp-admin, on a `b-dosql` isolate that WooCommerce already warmed, can return 500. The cause is the 128 MB isolate cap, and here it is not the WebAssembly heap: on that isolate the heap was at 99 MiB, and the overflow is the JavaScript heap, which `x-wasm-mib` does not show (#219, 2026-11-09). #219 is closed as not planned; this section is its record. A skip of WooCommerce, as the media-upload path uses, cannot apply, because the request is about WooCommerce itself. The lever is memory headroom, mainly lazy MEMFS nodes (`LAZY_NODES=on`, #218). The store Container (approach C) was retired (#214), so it is not the fix here. That is separate from the open question of where wp-admin runs (Workers or a Container), which is decided after the new engine is fully tested.
 
@@ -173,37 +167,19 @@ header, an API key in a header) must send `Vary` naming that header, or `Cache-C
 rather than rely on `Vary`. Without one of them, the first answer at that URL is the one that guests get. This is how any
 cache that keys by URL behaves; a site behind a CDN has the same rule.
 
-## Provisioning
-
-### Durable email through Queues is not yet a default
-
-The `async-email-queue` descriptor makes the per-site queue, the dead-letter queue and the `EMAIL_QUEUE` binding. It is opt-in. The queue consumer subscription (queue to the site Worker, with `max_retries` and the dead-letter queue) is a step after deploy, and the descriptor step before deploy does not do it. If the descriptor were on by default, order mail would go to a queue with no consumer and never be delivered. It can become a default only after that subscription is wired. See [../async-email-durable-retry.md](../async-email-durable-retry.md).
-
-### Vectorize semantic search: the plugin side is closed upstream, not measured here
-
-The `vectorize-search` descriptor is opt-in. It adds the `AI` and `SEARCH_INDEX` bindings and a per-site Vectorize index. The search engine is the skyphusion-ai plugin, which is not duplicated here. The Worker answers `aiEmbed` and `vectorize` on those bindings and writes `SKYPHUSION_AI_CF_BRIDGE` only when both are present (issue #330). A plugin build that has not taken the bridge still uses a stored token over the REST API. A tenant site holds no such token. For the token-free path, the plugin must prefer the WfP bridge when `SKYPHUSION_AI_CF_BRIDGE` is set. That change is closed upstream: [skyphusion-ai#193](https://github.com/skyphusion-labs/skyphusion-ai/issues/193) closed as completed on 2026-11-12 (skyphusion-ai PR #195). It is not measured here: no Pagefeather run has shown a search going through the bridge end to end. Cloudflare also caps the number of Vectorize indexes per account, which limits how many sites can opt in. See [../vectorize-search.md](../vectorize-search.md).
-
-### Per-tenant limits and outbound metering are a future direction (#247)
-
-Isolation today is one user Worker, one Durable Object and one R2 bucket per site, plus a KV site map and dispatch routing. Two Workers for Platforms features are not used yet: custom limits per tenant Worker (CPU time and subrequests), and an outbound Worker that records each tenant's egress. The outbound Worker does not see fetches made from inside a Durable Object. See [../wfp.md](../wfp.md) and [../reference-wfp.md](../reference-wfp.md).
-
-### The per-site Terraform pins the zone to skyphusion.org (#157)
-
-`deploy/wfp/terraform/site` sets the variable `zone_id` to the `skyphusion.org` zone by default. A bring-your-own apex (a domain on its own zone) must set `TF_VAR_zone_id` to its own zone id, or the site resources go to the wrong zone. This is a real gap for bring-your-own-domain use. See [byo-domain.md](byo-domain.md).
-
 ## Memory limits: the three figures
 
 Three memory figures appear in these docs. They are not the same limit.
 
 | Figure | What it is |
 |---|---|
-| 128 MB per isolate | Cloudflare's documented limit. The Workers limits page, as read in [../design-394-bundle-out-of-memory.md](../design-394-bundle-out-of-memory.md), 2026-11-13. That page includes the JavaScript heap. |
-| about 255 MiB | Measured reachable size in an empty isolate (#394, [../admin-memory-matrix.md](../admin-memory-matrix.md), 2026-11-14). |
+| 128 MB per isolate | Cloudflare's documented limit. The Workers limits page, as read in [evidence](../design-394-bundle-out-of-memory.md), 2026-11-13. That page includes the JavaScript heap. |
+| about 255 MiB | Measured reachable size in an empty isolate (#394, [evidence](../admin-memory-matrix.md), 2026-11-14). |
 | 117 to 119 MiB of wasm | The measured write ceiling (#598). This is the figure that binds a site. |
 
 `x-wasm-mib` is the PHP WebAssembly heap only, so the JavaScript heap is not in that header.
 
-## A heavy plugin set: memory and bundle size (b-dosql, measured 2026-11-11)
+## A heavy plugin set: memory and bundle size (the built-in database option, measured 2026-11-11)
 
 Measured on a real store imported for skyphusion-labs/ggc#101. It runs WooCommerce 11.2.1, Rank Math 1.0.280, skyphusion-ai 0.6.2, MCP Adapter 0.7.1 and twentytwentyfive, on a site in `deploy/wfp`. The test was a guest probe: the home page, the Store API, the shop, a product, the cart and a cheque checkout.
 
@@ -232,7 +208,7 @@ A WordPress-only site has room for several typical plugins (an estimate). That r
 
 What does not fit:
 
-- All 18 suite plugins at once. Each of the 18 passes on its own. With all 18 active, the login request answered 1102 (the Worker exceeded its resource limits) at 118 MB of WebAssembly memory ([../approach-a.md](../approach-a.md)).
+- All 18 suite plugins at once. Each of the 18 passes on its own. With all 18 active, the login request answered 1102 (the Worker exceeded its resource limits) at 118 MB of WebAssembly memory ([evidence](../approach-a.md)).
 - Rank Math on a WooCommerce store. Requests reach 119 MiB, and every other request answers 503 (#279). #279 measured that on ggc-test on 2026-11-11, with WooCommerce 11.2.1, Rank Math 1.0.280, skyphusion-ai 0.6.2, mcp-adapter 0.7.1 and twentytwentyfive.
 - A page builder in the editor. Elementor's editor memory is not measured yet (#758). The block editor already reaches this ceiling (#598).
 
@@ -248,3 +224,6 @@ A killed upload can leave its files for up to one upload or one cron tick after 
 
 The next media upload, or the cron tick when cron is on, removes a file only when its key is core's dated attachment path (`uploads/YYYY/MM/<file>`, a four-digit year, a month 01-12, and a file name with no further folder) and no attachment names it. A stale marker on any other key under `uploads/` (fonts, WooCommerce downloads and logs, a plugin folder) drops the marker and keeps the file. A database error during that check keeps the file.
 
+## Engineering and operator-only limits
+
+Limits that only an engineer or an operator meets (the WP-CLI operator route, a test-seam write, and the provisioning options) are on [Engineering and operator-only limits](../limits-engineering.md). Each one keeps its issue number and its figures there.
