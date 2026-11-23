@@ -977,6 +977,14 @@ SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCL
 # secret, a bad DROP_SETTINGS, or a key this build does not know, #1285). REPLACE_INPUTS=1
 # drops an unknown key and names it. A known key is kept. The record is not written again
 # without a key that this run did not name.
+# python_floor_check: site update needs Python 3.11 or later, because a rollback reads the rendered config with
+# tomllib (site_settings.py rollback-conf, #1385). Refuse before shared init, the build or any upload, so an older
+# python3 (macOS ships 3.9) never fails half way through a rollback. 0 ok, 2 refused (with the version found).
+python_floor_check() {
+  python3 -I -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null && return 0
+  echo "site update needs Python 3.11 or later (a rollback reads the config with tomllib, #1385); this python3 is $(python3 -V 2>&1 | head -1 || echo missing). Nothing was changed." >&2
+  return 2
+}
 keep_settings() {
   local b=$1 rec="$2/settings.json" rc=0 m
   SETTINGS_RECORDED=0

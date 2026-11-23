@@ -27,6 +27,8 @@ need_account
 cmd=${1:-}; s=${2:-}
 if [ "$cmd" = list ]; then list_sites; exit 0; fi
 case "$cmd" in add|remove|update|import|restore|schedule) ;; *) echo "usage: site add|remove|update|import|restore|schedule <name> | site update --all | site list" >&2; exit 2 ;; esac
+# #1385: site update needs Python 3.11+ (tomllib in the rollback); refused before anything else.
+if [ "$cmd" = update ]; then python_floor_check || exit 2; fi
 # #639, #693: OBSERVABILITY=full on a live site (deploy/live-sites/<name>.env or
 # deploy/wfp/live-sites/<name>) is refused before shared init, the build, or any
 # upload. 1 and unset are unchanged. update --all checks each site in update_one.
@@ -214,7 +216,7 @@ update_one_inner() {
     return "$rec_rc"
   fi
   echo "site $s: ROLLING BACK to $rollback. NOTE: a rollback drops any write made between the snapshot and now." >&2
-  local restore_failed=0
+  local restore_failed=0 rb_left=0
   if [ -n "$snap_key" ]; then
     WFP_S3_ENDPOINT="$EP" python3 -I "${WFP_SNAPSHOT:-$WFP/snapshot.py}" dbrestore "$ORIGIN" "$TOK" "$bucket" "$snap_key" \
       || { restore_failed=1; echo "site $s: the data restore FAILED; the snapshot is $bucket/_snapshots/$snap_key" >&2; }
@@ -238,7 +240,9 @@ update_one_inner() {
       echo "site $s: the rollback tree could not be placed in a mirror of the repo; it deploys from $SAVED (the bundle may differ in module path strings only)" >&2
       [ -e "$SAVED/node_modules" ] || ln -s "$APP/node_modules" "$SAVED/node_modules"
     fi
-    cp "$CONF" "$SAVED/wrangler.rollback.toml"
+    # #1385: the rollback re-deploys the RECORDED settings, not this run's: a setting that broke the update
+    # must not stay live while the record goes back. A key it cannot put back is named (ROLLBACK LEFT ...).
+    python3 -I "$WFP/site_settings.py" rollback-conf "$CONF" "$WDIR/settings.json" "$SAVED/wrangler.rollback.toml" || rb_left=1
     local W2; W2=$(mktemp -d)
     # #569: the rollback tree is a build too: a remote one needs its assets in this config.
     if ! remote_assets_check "$SAVED/wrangler.rollback.toml" "$SAVED"; then
@@ -259,6 +263,7 @@ update_one_inner() {
     echo "site $s: no saved build artifact of this site's live build; the old code is NOT re-deployed. Deploy ${rollback:-the old build} by hand. The data was restored from the snapshot." >&2
   fi
   [ -n "$SAVED" ] && rm -rf "$SAVED"
+  [ "$rb_left" = 1 ] && echo "site $s: the rollback is live, but a setting named above is NOT the recorded one (#1385). The next update compares against the record, so it will not see it: set it back by hand, or update with FORCE_UPLOAD=1 and the recorded values." >&2
   [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows after (rolled back): $(row_count "$ORIGIN" "$TOK")"
   if [ "$restore_failed" = 1 ]; then
     # #515: the database holds only the parts before the failed one. Hold the site.

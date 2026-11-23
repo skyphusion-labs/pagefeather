@@ -31,7 +31,7 @@ We use two names on this page:
 
 ### Step 2: install the tools (in your terminal)
 
-You need git, Node.js 22 or later, Terraform 1.5 or later, Python 3, curl, zip, unzip and lsof. macOS already has curl, zip, unzip and lsof.
+You need git, Node.js 22 or later, Terraform 1.5 or later, Python 3.11 or later, curl, zip, unzip and lsof. macOS already has curl, zip, unzip and lsof.
 
 On **macOS**, with [Homebrew](https://brew.sh):
 

@@ -44,7 +44,7 @@ We use two names, as on [Start here](start-here.md):
 
 ### Step 2: install the tools (in your terminal)
 
-You need git, Node.js 22 or later, Terraform 1.5 or later, Python 3, curl, zip, unzip and lsof. The commands are the same as in [Start here, step 2](start-here.md#step-2-install-the-tools-in-your-terminal).
+You need git, Node.js 22 or later, Terraform 1.5 or later, Python 3.11 or later, curl, zip, unzip and lsof. The commands are the same as in [Start here, step 2](start-here.md#step-2-install-the-tools-in-your-terminal).
 
 ### Step 3: get the code
 
