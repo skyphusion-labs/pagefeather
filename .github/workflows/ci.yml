@@ -649,7 +649,7 @@ jobs:
           deploy/wfp/tests/build-inputs-test.sh
           deploy/wfp/tests/kv-build-test.sh
           deploy/wfp/tests/config-hash-test.sh
-      - name: deploy/zone owner guard (PLANTED for #1397: one m: php-run line)
+      - name: deploy/zone owner guard, PLANTED, one m: php-run line
         # apply.sh and destroy.sh refuse to overwrite a cache phase another root owns.
         run: deploy/zone/tests/owner-guard-test.sh
       - name: c1 warm start tests
