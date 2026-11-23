@@ -19,10 +19,12 @@ We use two names, as on [Start here](start-here.md):
   - [ ] It has a **host name**, such as `db.example.com`, not only an IP address. By IP address, every query was about 6 times slower ([approach-a.md](../approach-a.md)).
   - [ ] It accepts **SSL** connections.
   - [ ] Port **3306** is open to [Cloudflare's IP ranges](https://www.cloudflare.com/ips/).
-  - [ ] You have a **user and a password**, and an **empty database** for this site.
-  - [ ] You know its **cloud and region**, such as `azure:westus2` or `aws:us-east-1`. The site then runs next to it. A site far from its database was 2 to 5 times slower ([full reference](../../deploy/README.md#options)).
+  - [ ] You have an **empty database** for this site, and a **user and a password** with full rights on it.
+  - [ ] You know its **cloud and region**, such as `azure:westus2` or `aws:us-east-1`. Your provider's console shows the region of the server. The cloud is `aws`, `gcp` or `azure`; for another host, use the nearest region of those three. The install needs it, so that the site runs next to your database. A site far from its database was 2 to 5 times slower ([full reference](../../deploy/README.md#options)).
 
-  No server yet? Choose a provider in the [onboarding guide](onboarding.md). Or let the install make one on Vultr with `MYSQL=vultr`: that needs a Vultr API key and a domain on Cloudflare, costs $10 a month, and you must remove it when you are done, or it keeps costing money ([full reference](../../deploy/README.md#variant-a-php-in-the-worker-mysql-through-hyperdrive-workers-paid)).
+  To test the connection from your computer: `mysql --ssl-mode=REQUIRED -h <host> -u <user> -p <database>`. MEASURE: confirm on the box run.
+
+  No server yet? Choose a provider in the [onboarding guide](onboarding.md). Or `MYSQL=vultr` makes one: it needs a Vultr API key and a domain on Cloudflare, costs $10 a month billed by the hour while it exists, and the site's removal must remove it too. We did not run that path for this page ([full reference](../../deploy/README.md#variant-a-php-in-the-worker-mysql-through-hyperdrive-workers-paid)).
 
 ### Step 1: set up Cloudflare (in your browser)
 
@@ -55,7 +57,9 @@ cd pagefeather
 
 ### Step 4: make your store
 
-Put your values in place of the dots. Choose a short site name in place of `my-store`: lower-case letters, numbers and dashes. Put your server's cloud and region in place of `azure:westus2`.
+1. Put your values in place of the dots. Choose a short site name in place of `my-store`: lower-case letters, numbers and dashes.
+2. Set `PLACEMENT` to your server's cloud and region, in place of `azure:westus2`. It is required.
+3. On a strict server (Azure, PlanetScale, or MySQL 8 as it comes), keep the `HYPERDRIVE_SQL_MODE` line. On another server, delete that line.
 
 ```sh
 export CLOUDFLARE_API_TOKEN=...
@@ -63,10 +67,9 @@ export ACCOUNT_ID=...
 VARIANT=a MYSQL=external \
   MYSQL_HOST=... MYSQL_USER=... MYSQL_PASSWORD=... MYSQL_DATABASE=... \
   PLACEMENT=azure:westus2 \
+  HYPERDRIVE_SQL_MODE=ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION \
   WOO_ACTIVE=1 MEDIA=1 BENCH=0 NAME=my-store ./deploy/deploy.sh
 ```
-
-A strict server (Azure, PlanetScale, or MySQL 8 as it comes) also needs `HYPERDRIVE_SQL_MODE=ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION` on that command.
 
 It connects Cloudflare to your database, makes the site in your account, and installs WordPress and WooCommerce into your database. At the end it prints your site's address. MEASURE: the time on the box run.
 
@@ -95,7 +98,7 @@ The first settings to check are the same as in [Start here](start-here.md#2-how-
 
 ## Remove a site
 
-**This deletes the site, and it cannot be undone.** It deletes the site's Worker, its bucket of uploaded images and files, Cloudflare's connection to your database, and the site's secrets.
+**This deletes the site, its uploaded files and its secrets, but not your database. It cannot be undone.** It deletes the site's Worker, its bucket of uploaded images and files, Cloudflare's connection to your database, and the site's secrets.
 
 From the `pagefeather` folder, with the same two `export` lines from step 4 in place:
 
@@ -103,13 +106,13 @@ From the `pagefeather` folder, with the same two `export` lines from step 4 in p
 NAME=my-store ./deploy/destroy.sh
 ```
 
-**It does not touch your MySQL database.** Your posts, pages, orders and users stay there. Delete the database yourself when you no longer need it. MEASURE: the last line on the box run.
+**It does not touch your MySQL database.** Your database and its tables stay, with your posts, pages, orders and users. Delete them on your server if you want them gone. MEASURE: the last line, and the tables still there, on the box run.
 
 ## 3. What are my limits?
 
 Each line has its measured figure and a link to the evidence.
 
-- **Cost:** $5 a month for Workers Paid, plus your MySQL server ([the database server](cost.md#the-mysql-option-the-database-server)).
+- **Cost:** $5 a month for Workers Paid, plus whatever your MySQL server costs you ([the database server](cost.md#the-mysql-option-the-database-server)).
 - **Not on Workers Free.** The install stops at Free's 10 ms CPU limit ([plan limits](cost.md#plan-limits)).
 - **Checkout is slow:** the order step took 4.8 to 6.8 s in our tests ([checkout](limits.md#woocommerce-checkout-is-slow-on-the-mysql-option-1218-1210)).
 - **WooCommerce admin and bulk product edits are slow:** a product save takes about 2 to 3 s, and a batch of 5 new products took 6.5 s ([admin](limits.md#woocommerce-admin-screens-and-bulk-product-edits-are-slow-on-the-mysql-option-1078)).
