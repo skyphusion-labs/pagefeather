@@ -18,7 +18,8 @@ site: Rollins' seed owns all setup (lead ruling on #759), and prepare verifies i
   - the page cache does not match --cache (one guest URL, fetched three times);
   - --cache on-unverified without --arm a. on-unverified (#1277 round 2, the lead's ruling) is declared for arm (a)
     only: it runs the same check as on and logs it LOUDLY as UNVERIFIED, but does not stop when no stored body was
-    served. "Could not measure" (no stamp at all) is still a stop. The run's env records the mode and the arm;
+    served, nor (the lead's changed ruling, 2026-11-23) when it could not measure (no stamp at all: served is then
+    unknown). Every other mode keeps both stops. The run's env records the mode, the arm, served and the 3 raw lines;
   - wc only: HTTP Basic with WP_PASSWORD is not 200, or a WRONG password is not 401 (the control:
     it proves Basic is checked, not ignored; see #761). The seed sets the admin account password to
     an application password, so ONE value passes the form and Basic: the WooCommerce suite uses
@@ -158,16 +159,29 @@ def check_cache(site, want):
     # render each time, while on b-dosql it was the stored body (Rollins, #1334). x-pf-rendered can: Pages stamps the
     # render time, and a cached copy keeps the stamp (page-stamp.mjs). So "served from cache" means a later guest GET
     # carries an earlier GET's stamp. The status is logged as data only.
-    seen, stamps = [], []
-    for _ in range(3):
+    seen, stamps, raw = [], [], []
+    for i in range(3):
         st, h, _ = site.req("GET", "/", cookies=False)
         hl = {k.lower(): v for k, v in h.items()}
         seen.append(hl.get("cf-cache-status", "-").upper())
         stamps.append(hl.get("x-pf-rendered", "-"))
+        # The guard's raw line for this fetch, recorded verbatim in the run's env (#1277 round 2).
+        raw.append("GET / #%d: HTTP %s; cf-cache-status %s; x-entrypoint %s; x-pf-call %s; x-pf-rendered %s" % (
+            i + 1, st, hl.get("cf-cache-status", "-"), hl.get("x-entrypoint", "-"), hl.get("x-pf-call", "-"), hl.get("x-pf-rendered", "-")))
     served = any(stamps[i] != "-" and stamps[i] in stamps[:i] for i in range(1, len(stamps)))
     say("page cache: guest GET / x3 -> cf-cache-status %s; x-pf-rendered %s; a stored body served: %s"
         % (",".join(seen), ",".join(stamps), "yes" if served else "no"))
+    for line in raw:
+        say("page cache: " + line)
     if want in ("on", "on-unverified"):
+        if all(x == "-" for x in stamps) and want == "on-unverified":
+            # #1277 round 2 arm (a), the lead's changed ruling: a no-stamp stored copy IS arm (a)'s defect (rollins), so
+            # "could not measure" is logged loudly and recorded (served: unknown, the 3 raw lines), and the run goes on.
+            say("UNVERIFIED: --cache on-unverified (#1277 round 2, arm (a) only): could not measure, no x-pf-rendered on "
+                "any of 3 guest fetches of / (cf-cache-status %s). The run goes on; whether a stored body was served is "
+                "UNKNOWN, and this is NOT a verified cache-on run." % ",".join(seen))
+            print("UNVERIFIED cache-on: could not measure (no x-pf-rendered; cf-cache-status %s)" % ",".join(seen), file=sys.stderr)
+            return seen, None, raw
         if all(x == "-" for x in stamps):
             raise Stop("--cache %s: could not measure, no x-pf-rendered on any of 3 guest fetches of / (%s); the "
                        "stamp is how a served body is told from a render (#1336)" % (want, ",".join(seen)))
@@ -182,7 +196,7 @@ def check_cache(site, want):
     if want == "off" and (served or "HIT" in seen):
         raise Stop("--cache off, but the page cache answered (%s; x-pf-rendered %s): deploy with PAGE_CACHE_TTL=0"
                    % (",".join(seen), ",".join(stamps)))
-    return seen, served
+    return seen, served, raw
 
 
 WC_BLOGNAME = "WooCommerce Core E2E Test Suite"
@@ -308,7 +322,7 @@ def cmd_prepare(a):
     say("admin: form login and REST nonce ok")
     if a.suite in ("wp", "gb"):
         editor_welcome_verify(site)
-    cache, served = check_cache(site, a.cache)
+    cache, served, raw = check_cache(site, a.cache)
     pairs = [("WP_BASE_URL", site.base), ("WP_USERNAME", user)]
     if a.suite in ("wc", "wc-api", "wc-cpt"):
         cuser, cust, admin_email = wc_verify(site, user, password)
@@ -320,7 +334,8 @@ def cmd_prepare(a):
         pairs += [("PF_CONFORMANCE_ARM", a.arm)]
     pairs += [("PF_CONFORMANCE_SUITE", a.suite), ("PF_CONFORMANCE_CACHE", a.cache),
               ("PF_CONFORMANCE_CACHE_SEEN", ",".join(cache)),
-              ("PF_CONFORMANCE_CACHE_SERVED", "yes" if served else "no")]
+              ("PF_CONFORMANCE_CACHE_SERVED", "unknown" if served is None else ("yes" if served else "no"))] + [
+              ("PF_CONFORMANCE_CACHE_RAW_%d" % (i + 1), line) for i, line in enumerate(raw)]
     if a.suite in ("wp", "gb"):
         artifacts, storage = conformance_artifact_paths(a.run_dir)
         os.makedirs(os.path.dirname(storage), exist_ok=True)

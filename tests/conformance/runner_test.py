@@ -346,8 +346,24 @@ def main():
             ok("on-unverified: the run's env records the mode, the arm and the result (served: no)")
         else:
             bad("on-unverified: the run's env does not record PF_CONFORMANCE_CACHE=on-unverified, PF_CONFORMANCE_ARM=a and PF_CONFORMANCE_CACHE_SERVED=no")
-        case("on-unverified with --arm a still stops when it cannot measure", r"--cache on-unverified: could not measure",
-             cache="on-unverified", setup=lambda s: setattr(s, "stamp", "none"), extra=["--arm", "a"])
+        # The lead's changed ruling (2026-11-23): for arm (a) only, "could not measure" also goes on, recorded as unknown,
+        # with the guard's 3 raw lines. Every other mode keeps BOTH stops.
+        NOSTAMP = lambda s: (setattr(s, "cache", "UPDATING"), setattr(s, "stamp", "none"))
+        _, nrd = case("on-unverified with --arm a and no stamp at all goes on, loudly", None, cache="on-unverified",
+                      setup=NOSTAMP, extra=["--arm", "a"], expect_rc=0,
+                      want_out=[r"UNVERIFIED: --cache on-unverified.*could not measure.*UNKNOWN", r"page cache: GET / #3: HTTP 200"])
+        nenv = open(os.path.join(nrd, "env")).read() if os.path.exists(os.path.join(nrd, "env")) else ""
+        raws = re.findall(r"^export PF_CONFORMANCE_CACHE_RAW_(\d)=(.*)$", nenv, re.M)
+        if "PF_CONFORMANCE_CACHE_SERVED=unknown" in nenv and [r[0] for r in raws] == ["1", "2", "3"] and \
+                all("x-pf-rendered -" in r[1] and "cf-cache-status" in r[1] for r in raws):
+            ok("on-unverified, could not measure: the env records served=unknown and the 3 raw guard lines")
+        else:
+            bad("on-unverified, could not measure: the env lacks PF_CONFORMANCE_CACHE_SERVED=unknown or the 3 raw lines (%s)" % raws)
+        case("every other mode keeps the could-not-measure stop: --cache on, even with --arm a", r"--cache on: could not measure",
+             setup=NOSTAMP, extra=["--arm", "a"])
+        case("every other mode keeps the could-not-measure stop: --cache on, no arm", r"--cache on: could not measure", setup=NOSTAMP)
+        case("on-unverified with no stamp but --arm b still stops (the arm refusal comes first)", r"on-unverified is declared for #1277 round 2 arm \(a\) only",
+             cache="on-unverified", setup=NOSTAMP, extra=["--arm", "b"])
         case("on-unverified with --arm a and a stored body: no UNVERIFIED line needed", None, cache="on-unverified",
              setup=lambda s: (setattr(s, "cache", "EXPIRED"), setattr(s, "stamp", "same")), extra=["--arm", "a"], expect_rc=0,
              want_out=[r"a stored body served: yes"])
