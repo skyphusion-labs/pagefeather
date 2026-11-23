@@ -117,6 +117,8 @@ NAME=my-site ./deploy/destroy.sh
 
 Before it deletes anything, it checks that `my-site` is a site this folder made. After it, your site's address answers "not found".
 
+Near the end it prints `Destroy complete! Resources: 5 destroyed.` That count is only the Terraform part: the 4 site secrets and the media bucket. The Worker, and with it the site's database, is deleted before that, on the line `destroy: Worker my-site is gone (API: 404)`. So 5 is the full count, not a partial one (measured 2026-11-23 on a new site).
+
 ## 3. What are my limits?
 
 Each line has its measured figure and a link to the evidence.
