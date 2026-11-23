@@ -50,9 +50,10 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def do_PUT(self):
         n = int(self.headers.get("content-length") or 0)
-        store[urllib.parse.unquote(self.path)] = self.rfile.read(n)
-        mtime[urllib.parse.unquote(self.path)] = time.time()
-        meta[urllib.parse.unquote(self.path)] = {k.lower(): v for k, v in self.headers.items() if k.lower().startswith("x-amz-meta-")}
+        k = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)  # S3 keys ignore the query (a presigned url carries one, #1327)
+        store[k] = self.rfile.read(n)
+        mtime[k] = time.time()
+        meta[k] = {k.lower(): v for k, v in self.headers.items() if k.lower().startswith("x-amz-meta-")}
         self.send(200)
 
     def do_HEAD(self):
@@ -66,7 +67,7 @@ class H(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_DELETE(self):
-        store.pop(urllib.parse.unquote(self.path), None)
+        store.pop(urllib.parse.unquote(urllib.parse.urlsplit(self.path).path), None)
         self.send(204)
 
     def do_GET(self):
