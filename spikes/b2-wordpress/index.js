@@ -5228,7 +5228,8 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const headers = {};
 			req.headers.forEach((v, k) => (headers[k] = v));
 			// The operator switches PHP reads (the AST-cache bypass #173, the object cache off, the memory trace and its
-			// switches #434, the WooCommerce deferral A/B #768) reach PHP only with a valid spike token (operator-headers.mjs).
+			// switches #434, the WooCommerce deferral A/B #768, the throwaway's global-styles reset #1401) reach PHP only
+			// with a valid spike token (operator-headers.mjs).
 			stripOperatorHeaders(headers, spikeOk);
 			let body;
 			if (env.MEDIA && isMediaUpload(req, url) && Number(req.headers.get('content-length') || 0) > STAGE_MIN_BYTES) {

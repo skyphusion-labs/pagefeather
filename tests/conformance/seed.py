@@ -53,6 +53,12 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
      answers, success or failure, the seed revokes that password
      (DELETE /wp/v2/users/<id>/application-passwords/<uuid>). If the revoke fails, the seed
      stops and says so. The password is not left on the site.
+  0b. SEED_RESET_GLOBAL_STYLES=1 (the gb seed, #1401): before item 1, on a marked throwaway only, POST
+     pf-conformance/v1/reset-global-styles (the marker mu-plugin) deletes every wp_global_styles post with its
+     revisions, as a fresh wp-env has none. Gutenberg's style revision specs count revisions, and core REST cannot
+     delete them. The route needs the throwaway marker AND the spike token (SPIKE_TOKEN; the seed refuses without it,
+     and sends x-pf-conformance-reset: 1, which the Worker passes to PHP only with a valid token). Checked: the route answers 200 and reports 0 posts and 0 revisions left. A marker without the
+     route (404) fails, named. Recorded as global_styles_reset in seed.json.
   9. --theme <slug> (optional): activates that installed theme (the admin's own activation link on themes.php) and
      checks it is the active stylesheet. joan's runner asks twentytwentythree before wc and wc-api: WooCommerce's
      external setup activates it, and the wp and gb global setups switch to twentytwentyone before.
@@ -98,6 +104,7 @@ SEED_TIMEZONE = "America/Detroit"
 # MAIL_ALLOWED_TO).
 ADMIN_EMAIL = os.environ.get("SEED_ADMIN_EMAIL", "").strip()
 RESET_STORE = os.environ.get("SEED_RESET_STORE") == "1"
+RESET_GLOBAL_STYLES = os.environ.get("SEED_RESET_GLOBAL_STYLES") == "1"
 CUSTOMER = {"username": "customer", "email": "customer@woocommercecoree2etestsuite.com", "first_name": "Jane", "last_name": "Smith"}
 IMAGES = ("image-01.png", "image-02.png", "image-03.png")
 IMG_PATH = "plugins/woocommerce/tests/e2e/test-data/images/"
@@ -271,10 +278,10 @@ def js(body):
         return None
 
 
-def rest(o, nonce, route, data=None, method=None):
+def rest(o, nonce, route, data=None, method=None, extra=None):
     q = route.split("?", 1)
     path = "/?rest_route=" + q[0] + ("&" + q[1] if len(q) > 1 else "")
-    hd = {"X-WP-Nonce": nonce}
+    hd = dict({"X-WP-Nonce": nonce}, **(extra or {}))
     if data is not None and not isinstance(data, bytes):
         data = json.dumps(data).encode()
         hd["Content-Type"] = "application/json"
@@ -518,6 +525,24 @@ def main():
                     halt("the application password minted for the store reset is still on the site (its DELETE answered %s). Revoke the one named conformance-reset-<time> in Users > Profile > Application Passwords. The seed is stopping." % rc)
             elif fresh:
                 halt("the application password minted for the store reset came back with no uuid, so it was not revoked. The seed is stopping.")
+
+    # 0b. SEED_RESET_GLOBAL_STYLES=1 (#1401): a fresh wp-env has no global-styles revisions; Gutenberg's style
+    # revision specs count them. Only on a marked throwaway: the route deletes every user style the site has.
+    if RESET_GLOBAL_STYLES:
+        if not marked:
+            refuse("SEED_RESET_GLOBAL_STYLES=1 needs the throwaway marker (a local site without it is never reset)")
+        if not os.environ.get("SPIKE_TOKEN"):
+            refuse("SEED_RESET_GLOBAL_STYLES=1 needs SPIKE_TOKEN: the reset route is gated by the throwaway AND the spike token")
+        # req() adds x-spike-token for this site; the Worker passes x-pf-conformance-reset to PHP only when it matches.
+        cg, bg = rest(a, n, "/pf-conformance/v1/reset-global-styles", {}, "POST", {"x-pf-conformance-reset": "1"})
+        bg = bg if isinstance(bg, dict) else {}
+        gs = {k: bg.get(k) for k in ("posts", "revisions", "left_posts", "left_revisions")}
+        if cg == 404:
+            check("global styles reset (SEED_RESET_GLOBAL_STYLES): the marker mu-plugin has no reset-global-styles route; redeploy the throwaway with the current tests/conformance/php/pf-conformance-throwaway.php", False, status=cg)
+        else:
+            check("global styles reset (SEED_RESET_GLOBAL_STYLES, pf-conformance/v1/reset-global-styles): 0 posts and 0 revisions left",
+                  cg == 200 and bg.get("reset") is True and gs["left_posts"] == 0 and gs["left_revisions"] == 0, status=cg, **gs)
+        report["global_styles_reset"] = dict(status=cg, at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **gs)
 
     # 1. permalinks /%postname%/
     c, b, _ = req(a, "/wp-admin/options-permalink.php")

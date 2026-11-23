@@ -38,7 +38,6 @@ test('every HTTP_X_* header the engine PHP reads is an operator header, or named
 	const SAFE = {
 		HTTP_X_PF_QTRACE: 'hyperdrive-qtrace.php also asks the Worker (qtraceOn), which checks the spike token itself',
 		HTTP_X_PERF_ID: 'an id that only labels the memory trace, which needs x-mem-trace',
-		HTTP_X_PF_CONFORMANCE_RESET: 'tests/conformance marker only; see operator-headers.mjs',
 	};
 	const dir = new URL('../php/', import.meta.url);
 	const read = new Set();

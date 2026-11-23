@@ -274,6 +274,7 @@ jobs:
           python3 -I tests/conformance/matrix_test.py
           python3 -I tests/conformance/gaps_test.py
           bash tests/conformance/gaps-php-test.sh
+          bash tests/conformance/throwaway-php-test.sh
           python3 -I tests/conformance/seed-test.py
           python3 -I tests/conformance/routes-test.py
       - name: conformance upload persistence probe against a stub (#759)
@@ -294,6 +295,7 @@ jobs:
           node --test spikes/b2-wordpress/tests/mem-trace.test.mjs
           node --test spikes/b2-wordpress/tests/operator-headers.test.mjs
           node --test spikes/b2-wordpress/tests/upload-scope.test.mjs
+          node --test spikes/b2-wordpress/tests/conformance-reset-gate.test.mjs
           python3 -I tests/wfp/admin-mem-test.py
       - name: Memory trace hooks mode against WordPress's own hook code (#504)
         # The three wp-includes files of the pinned WordPress (spikes/b2-wordpress/build.sh

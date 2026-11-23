@@ -51,6 +51,15 @@ content, and `render_user` checks as the last guard.
    A wp run's revoke-all spec leaves the form login working and Basic dead (#1151). The reset does not send the
    password from creds.env. Without the reset the store keeps every product of earlier runs, and the shop page
    differs from stock.
+   For the gb suite, seed with `SEED_RESET_GLOBAL_STYLES=1` and the site's `SPIKE_TOKEN` (#1401): on a marked
+   throwaway only, the seed calls `POST pf-conformance/v1/reset-global-styles` (the marker mu-plugin), which deletes
+   every user global-styles post with its revisions. The route needs the throwaway (only the marker registers it) AND
+   the spike token (the Worker passes the seed's `x-pf-conformance-reset: 1` to PHP only with a valid `x-spike-token`)
+   AND an admin; anything less is refused and deletes nothing. The seed refuses the flag without `SPIKE_TOKEN`. A fresh wp-env has none, and Gutenberg's style revision specs count them; core REST cannot
+   delete them. The seed checks that 0 posts and 0 revisions are left, and records it as `global_styles_reset` in
+   `seed.json`. Without it, `site-editor/user-global-styles-revisions.spec.js` depends on how many gb runs the site
+   has had (44 revisions on `cf759hw`, 3 of 3 failing). A site deployed before this route existed answers 404, and the
+   seed fails, naming the redeploy.
 3. **Run:** `. <out>/creds.env`, then `runner.py prepare` (it checks the seed and never writes), then the suite
    (`tests/conformance/vps-run.sh`). Each run asserts that the auth setup really logged in (`runner.py check-state`).
 4. **The REST routes:** `tests/conformance/routes.py` (#779) over the site's own index, with `WP_PASSWORD`.

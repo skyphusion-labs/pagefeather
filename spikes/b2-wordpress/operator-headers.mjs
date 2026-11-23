@@ -1,6 +1,8 @@
 // The operator switches PHP reads from request headers. Each is honoured only with a valid spike token: without
 // one, handleInner (index.js) removes it before PHP runs. Moved verbatim from index.js first; the rule is below.
-export const OPERATOR_PHP_HEADERS = new Set(['x-ast-cache-off', 'x-oc-off', 'x-mem-trace', 'x-mem-off', 'x-pf-wc-defer']);
+// x-pf-conformance-reset (#1401) is read by the throwaway marker (tests/conformance/php/pf-conformance-throwaway.php),
+// not by the engine's own php/, and is stripped here like the rest.
+export const OPERATOR_PHP_HEADERS = new Set(['x-ast-cache-off', 'x-oc-off', 'x-mem-trace', 'x-mem-off', 'x-pf-wc-defer', 'x-pf-conformance-reset']);
 // PHP sees a header as $_SERVER['HTTP_' + name.toUpperCase().replace(/-/g, '_')] (php-wasm), so every name that maps
 // to the same key is the same switch: a header is compared by that key, not by its spelling.
 const phpKey = (name) => 'HTTP_' + String(name).toUpperCase().replace(/-/g, '_');
