@@ -117,13 +117,15 @@ NAME=my-site ./deploy/destroy.sh
 
 Before it deletes anything, it checks that `my-site` is a site this folder made. After it, your site's address answers "not found".
 
+Near the end it prints `Destroy complete! Resources: 5 destroyed.` That count is only the Terraform part: the 4 site secrets and the media bucket. The Worker, and with it the site's database, is deleted before that, on the line `destroy: Worker my-site is gone (API: 404)`. So 5 is the full count, not a partial one (measured 2026-11-23 on a new site).
+
 ## 3. What are my limits?
 
 Each line has its measured figure and a link to the evidence.
 
 - **Cost:** $5 a month for Workers Paid. Images and files use R2's free tier, 10 GB a month, then a small metered charge ([plan limits](cost.md#plan-limits)).
 - **You cannot install plugins from wp-admin.** The site is code-locked: install, update and edit are off, by design. You can activate and deactivate plugins in wp-admin ([why](from-lamp.md)).
-- **You add plugins when you deploy.** Add `PLUGINS="slug slug"` to the step 4 command. You can use the 18 popular plugins that are already checked and pinned ([the list](limits.md#the-18-checked-plugins)). Any other plugin has to be pinned first.
+- **You add plugins when you deploy.** [How to add, update and remove plugins and themes](plugins-and-themes.md). In short: add `PLUGINS="slug slug"` to the step 4 command. You can use the 18 popular plugins that are already checked and pinned ([the list](limits.md#the-18-checked-plugins)). Any other plugin has to be pinned first.
 - **Memory decides how many plugins fit, not a count.** A page fails at about 117 to 119 MiB of memory. A WordPress-only site uses about 81 MiB on its heaviest admin page, so it has room for several typical plugins ([how many plugins fit](limits.md#how-many-plugins-fit)).
 - **Some big plugins do not fit:** Yoast SEO, All in One SEO and Elementor are over the 64 MiB size limit, and Rank Math with WooCommerce runs out of memory ([how many plugins fit](limits.md#how-many-plugins-fit)).
 - **WooCommerce here is a light shop.** Under heavy load the site can reset, and a write in progress can be lost. For a real store, use the MySQL option ([details](limits.md#woocommerce-on-the-built-in-database-option-the-site-resets-under-heavy-load-a-tracked-limit-1022)).

@@ -2,6 +2,8 @@
 
 **New here? [Start here](start-here.md).** One page: how to install a site, how to log in, and what the limits are. The rest of this page compares the paths.
 
+**Plugins and themes:** you add them when you deploy, not in wp-admin. [How to add, update and remove them](plugins-and-themes.md).
+
 It is fine to start small and move up a path later. This page is for you if you want to run a WordPress site, or a WooCommerce site, on Cloudflare.
 
 The short version comes first. Three paths are open. Each one names its cost and its main limit, and every figure links to the page it comes from. When you want the research behind a figure, follow that link. The whole research index is on the [engineering pages](../engineering/README.md). The full list of pages is the [docs map](../README.md).

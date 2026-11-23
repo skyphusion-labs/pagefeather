@@ -8,6 +8,8 @@ This page is for you if you want to run WordPress or WooCommerce sites on your o
 
 **One store, with `deploy/deploy.sh`?** [Start here: the MySQL option](start-here-mysql.md) has the steps. This page is for many sites on Workers for Platforms.
 
+**Plugins and themes:** you add them when you deploy, not in wp-admin. [How to add, update and remove them](plugins-and-themes.md).
+
 ## The idea in one paragraph
 
 Approach A needs a MySQL database, and you choose where it lives. An onboarding step takes that choice and makes one Hyperdrive configuration for it. After that, you can make as many type-a sites as you want, and each one uses that configuration. So you make the provider choice once, and then each site is one command.
