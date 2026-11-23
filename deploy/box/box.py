@@ -128,7 +128,7 @@ class Vultr:
             return e.code, {}
 
 
-def create(api, label, user_data, region, plan, os_id=2284):
+def create(api, label, user_data, region, plan, os_id=2284, v6_wait_s=60, v6_poll_s=5):
     st, plans = api.call("GET", "/plans?type=all&per_page=500")
     p = next((x for x in plans.get("plans") or [] if x.get("id") == plan), None)
     if st != 200 or not p or region not in (p.get("locations") or []):
@@ -144,12 +144,26 @@ def create(api, label, user_data, region, plan, os_id=2284):
         api.call("DELETE", "/firewalls/" + fwid)
         raise SystemExit("the sentinel rule did not read back; the firewall is deleted and no box was made")
     st, inst = api.call("POST", "/instances", {"region": region, "plan": plan, "os_id": os_id, "label": label, "hostname": label,
-                                               "firewall_group_id": fwid, "backups": "disabled", "tags": [label],
+                                               "firewall_group_id": fwid, "backups": "disabled", "tags": [label], "enable_ipv6": False,
                                                "user_data": base64.b64encode(user_data.encode()).decode()})
     if st not in (200, 201, 202):
         api.call("DELETE", "/firewalls/" + fwid)
         raise SystemExit("instance create: HTTP %s (the firewall is deleted)" % st)
-    return {"instance": inst["instance"]["id"], "firewall": fwid, "hourly_usd": p.get("hourly_cost")}
+    iid = inst["instance"]["id"]
+    # The sentinel rule is IPv4. No inbound must hold on IPv6 too, so the box gets no v6 address at all: asked for above
+    # (enable_ipv6 false) and read back here. A box that has one is destroyed before it can matter.
+    v6 = None
+    for _ in range(int(v6_wait_s / max(v6_poll_s, 0.01)) + 1):
+        st, b = api.call("GET", "/instances/" + iid)
+        if st == 200 and "v6_main_ip" in (b.get("instance") or {}):
+            v6 = (b["instance"].get("v6_main_ip") or "").strip()
+            break
+        time.sleep(v6_poll_s)
+    if v6 is None or (v6 and v6 != "::"):
+        d = destroy(api, iid, fwid, settle_s=v6_poll_s)
+        raise SystemExit("the box %s an IPv6 address (%s); it is destroyed (ok=%s) and the run stops"
+                         % ("has" if v6 else "did not report", "v6_main_ip set" if v6 else "no read-back", d["ok"]))
+    return {"instance": iid, "firewall": fwid, "hourly_usd": p.get("hourly_cost"), "v6_main_ip": v6 or ""}
 
 
 def destroy(api, instance_id, firewall_id, settle_s=20):

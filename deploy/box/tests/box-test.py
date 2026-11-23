@@ -7,7 +7,8 @@ Cases:
   userdata: a creds value, or its base64, in the user-data is REFUSED; the creds reach the box only by the presigned GET;
   handoff: release puts the creds, waits for the box's read marker, deletes them, and reads back 404. A HEAD that still
            finds the object (the delete was lost) FAILS the release (the guard can fail);
-  destroy: deletes the instance, then the firewall, and reads both back gone; a firewall still listed FAILS.
+  destroy: deletes the instance, then the firewall, and reads both back gone; a firewall still listed FAILS;
+  create: asks for no IPv6 address and reads back v6_main_ip; a box that has one FAILS and is destroyed.
 """
 import base64, http.server, json, os, subprocess, sys, tempfile, threading, time, urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -103,5 +104,46 @@ state["instances"]["i2"] = "pfbox-y"; state["firewalls"].add("f2"); state["keep_
 d2 = box.destroy(api, "i2", "f2", settle_s=0)
 check("destroy: a firewall still listed FAILS", (d2["firewall_left"], d2["ok"]), (True, False))
 srv.shutdown()
+
+# 5. create: no inbound must hold on IPv6 too. It asks for no v6 address and reads back v6_main_ip; a box that has one is
+# destroyed (instance and firewall) and create fails.
+cs = {"v6": "", "posted": None, "instances": {}, "firewalls": set()}
+class CV(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def j(self, code, obj):
+        b = json.dumps(obj).encode(); self.send_response(code); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(b)
+    def body(self):
+        n = int(self.headers.get("content-length") or 0); return json.loads(self.rfile.read(n) or b"{}")
+    def do_POST(self):
+        p = self.path.split("?")[0]; b = self.body()
+        if p == "/v2/firewalls": cs["firewalls"].add("fw9"); self.j(201, {"firewall_group": {"id": "fw9"}})
+        elif p.endswith("/rules"): self.j(201, {})
+        elif p == "/v2/instances": cs["posted"] = b; cs["instances"]["i9"] = b["label"]; self.j(202, {"instance": {"id": "i9"}})
+    def do_GET(self):
+        p = self.path.split("?")[0]
+        if p == "/v2/plans": self.j(200, {"plans": [{"id": "vhf-3c-8gb", "locations": ["lax"], "hourly_cost": 0.066}]})
+        elif p.endswith("/rules"): self.j(200, {"firewall_rules": [{"id": 1}]})
+        elif p == "/v2/instances/i9": self.j(200, {"instance": {"id": "i9", "v6_main_ip": cs["v6"]}} if "i9" in cs["instances"] else {})
+        elif p == "/v2/instances": self.j(200, {"instances": [{"id": k} for k in cs["instances"]]})
+        elif p == "/v2/firewalls": self.j(200, {"firewall_groups": [{"id": f} for f in cs["firewalls"]]})
+        else: self.j(404, {})
+    def do_DELETE(self):
+        p = self.path.split("?")[0]
+        if p.startswith("/v2/instances/"): cs["instances"].pop(p.rsplit("/", 1)[1], None)
+        if p.startswith("/v2/firewalls/"): cs["firewalls"].discard(p.rsplit("/", 1)[1])
+        self.send_response(204); self.end_headers()
+cv = http.server.HTTPServer(("127.0.0.1", 0), CV); threading.Thread(target=cv.serve_forever, daemon=True).start()
+capi = box.Vultr("k", base="http://127.0.0.1:%d/v2" % cv.server_port)
+r = box.create(capi, "pfbox-t", "#!/bin/bash\n", "lax", "vhf-3c-8gb", v6_wait_s=1, v6_poll_s=0)
+check("create: the box is asked for no IPv6 address", cs["posted"].get("enable_ipv6"), False)
+check("create: no v6_main_ip read back: the box is kept", (r["instance"], r["v6_main_ip"]), ("i9", ""))
+cs.update(v6="2001:db8::1", instances={}, firewalls=set())
+try:
+    box.create(capi, "pfbox-t", "#!/bin/bash\n", "lax", "vhf-3c-8gb", v6_wait_s=1, v6_poll_s=0); got = "kept"
+except SystemExit as e:
+    got = "refused" if "IPv6" in str(e) else "refused: " + str(e)
+check("create: a box with a v6_main_ip FAILS", got, "refused")
+check("create: and that box and its firewall are destroyed", (sorted(cs["instances"]), sorted(cs["firewalls"])), ([], []))
+cv.shutdown()
 print("%d failing check(s)" % fails)
 sys.exit(1 if fails else 0)
