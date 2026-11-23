@@ -267,6 +267,9 @@ class Site(BaseHTTPRequestHandler):
                 return self._json(404, {"code": "rest_no_route"})
             if method != "POST":
                 return self._json(404, {"code": "rest_no_route"})
+            st["gs_headers"] = (self.headers.get("x-pf-conformance-reset"), self.headers.get("x-spike-token"))
+            if st["gs_headers"] != ("1", "tok-1401"):
+                return self._json(403, {"code": "rest_forbidden"})
             return self._json(200, st.get("gs_reply") or {"reset": True, "posts": 1, "revisions": 44, "left_posts": 0, "left_revisions": 0})
         if route:
             st.setdefault("routes", []).append((method, route))
@@ -738,18 +741,24 @@ check("wc_public_page_ok: checkout 200", _seed.wc_public_page_ok("checkout", 200
 GS = "/pf-conformance/v1/reset-global-styles"
 GS_CHECK = "global styles reset (SEED_RESET_GLOBAL_STYLES, pf-conformance/v1/reset-global-styles): 0 posts and 0 revisions left"
 gs_posts = lambda st: [r for r in st.get("routes", []) if r == ("POST", GS)]
-p, state, report = run_email_editor_seed({"SEED_RESET_GLOBAL_STYLES": "1"})
+p, state, report = run_email_editor_seed({"SEED_RESET_GLOBAL_STYLES": "1", "SPIKE_TOKEN": "tok-1401"})
 gsr = (report or {}).get("global_styles_reset") or {}
 check("#1401 SEED_RESET_GLOBAL_STYLES=1 on a marked throwaway: one POST to the reset route, checked ok, recorded",
       GS_CHECK not in ((report or {}).get("failed") or []) and len(gs_posts(state)) == 1 and ((report or {}).get("checks") or {}).get(GS_CHECK, {}).get("ok") is True
       and gsr.get("status") == 200 and gsr.get("revisions") == 44 and gsr.get("left_revisions") == 0, (p.returncode, gs_posts(state), gsr, p.stderr[-300:]))
-p, state, report = run_email_editor_seed({"SEED_RESET_GLOBAL_STYLES": "1"}, gs_reply={"reset": True, "posts": 0, "revisions": 5, "left_posts": 1, "left_revisions": 5})
+p, state, report = run_email_editor_seed({"SEED_RESET_GLOBAL_STYLES": "1", "SPIKE_TOKEN": "tok-1401"}, gs_reply={"reset": True, "posts": 0, "revisions": 5, "left_posts": 1, "left_revisions": 5})
 check("#1401 a reset that leaves a post or a revision behind fails the seed",
       GS_CHECK in ((report or {}).get("failed") or []), (p.returncode, (report or {}).get("failed")))
-p, state, report = run_email_editor_seed({"SEED_RESET_GLOBAL_STYLES": "1"}, gs_missing=True)
+p, state, report = run_email_editor_seed({"SEED_RESET_GLOBAL_STYLES": "1", "SPIKE_TOKEN": "tok-1401"}, gs_missing=True)
 failed = (report or {}).get("failed") or []
 check("#1401 a marker without the reset route (404) fails, naming the redeploy",
       any("has no reset-global-styles route" in f and "redeploy" in f for f in failed), (p.returncode, failed))
+p, state, report = run_email_editor_seed({"SEED_RESET_GLOBAL_STYLES": "1", "SPIKE_TOKEN": "tok-1401"})
+check("#1401 the reset POST carries x-pf-conformance-reset: 1 and the spike token",
+      state.get("gs_headers") == ("1", "tok-1401"), state.get("gs_headers"))
+p, state, report = run_email_editor_seed({"SEED_RESET_GLOBAL_STYLES": "1"})
+check("#1401 SEED_RESET_GLOBAL_STYLES=1 without SPIKE_TOKEN: refused (exit 2) before the route is called",
+      p.returncode == 2 and "needs SPIKE_TOKEN" in p.stderr and not [r for r in state.get("routes", []) if r[1] == GS], (p.returncode, p.stderr[-200:]))
 p, state, report = run_email_editor_seed()
 check("#1401 without SEED_RESET_GLOBAL_STYLES: the route is never called, and seed.json has no global_styles_reset",
       not [r for r in state.get("routes", []) if r[1] == GS] and "global_styles_reset" not in (report or {}), (p.returncode, state.get("routes")))

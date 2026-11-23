@@ -5271,6 +5271,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			// The memory trace and its switches (#434) reach PHP only with a valid spike token.
 			if (!spikeOk) { delete headers['x-mem-trace']; delete headers['x-mem-off']; }
 			if (!spikeOk) delete headers['x-pf-wc-defer']; // #768: the deferral's operator A/B switch (php/wc-route-defer.php)
+			if (!spikeOk) delete headers['x-pf-conformance-reset']; // #1401: the throwaway's global-styles reset needs the spike token too
 			let body;
 			if (env.MEDIA && isMediaUpload(req, url) && Number(req.headers.get('content-length') || 0) > STAGE_MIN_BYTES) {
 				const staged = await stageUpload(req, env);

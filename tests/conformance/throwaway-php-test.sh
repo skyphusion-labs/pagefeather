@@ -53,14 +53,38 @@ function pf_site( $styles, $revs_per, $other_revs ) {
 	return $oid;
 }
 require $argv[1];
+$_SERVER['HTTP_X_PF_CONFORMANCE_RESET'] = '1'; // the cases below run as the gated caller unless they say otherwise
 foreach ( $GLOBALS['pf_actions']['rest_api_init'] as $cb ) { $cb(); }
 $routes = $GLOBALS['pf_routes'];
 $case   = $argv[2];
 $reset  = $routes['pf-conformance/v1/reset-global-styles'] ?? null;
+$perm = function ( $header, $can ) use ( $reset ) {
+	unset( $_SERVER['HTTP_X_PF_CONFORMANCE_RESET'] );
+	if ( null !== $header ) { $_SERVER['HTTP_X_PF_CONFORMANCE_RESET'] = $header; }
+	$GLOBALS['pf_can'] = $can;
+	return ( $reset['permission_callback'] )();
+};
+// As the REST server does: the callback runs only when the permission callback says yes.
+$dispatch = function () use ( $reset ) { return ( $reset['permission_callback'] )() ? ( $reset['callback'] )() : 'refused'; };
 if ( 'routes' === $case ) {
-	$GLOBALS['pf_can'] = false; $denied = ( $reset['permission_callback'] )();
-	$GLOBALS['pf_can'] = true;  $allowed = ( $reset['permission_callback'] )();
-	echo json_encode( array( 'throwaway' => isset( $routes['pf-conformance/v1/throwaway'] ), 'method' => $reset['methods'] ?? null, 'denied' => $denied, 'allowed' => $allowed ) );
+	echo json_encode( array(
+		'throwaway'     => isset( $routes['pf-conformance/v1/throwaway'] ),
+		'method'        => $reset['methods'] ?? null,
+		'all_three'     => $perm( '1', true ),
+		'no_header'     => $perm( null, true ),
+		'header_not_1'  => $perm( 'yes', true ),
+		'no_capability' => $perm( '1', false ),
+	) );
+} elseif ( 'refused' === $case ) {
+	pf_site( array( 'publish' ), array( 44 ), 3 );
+	$before = count( $GLOBALS['pf_posts'] );
+	$out    = array();
+	foreach ( array( 'no_header' => array( null, true ), 'no_capability' => array( '1', false ) ) as $k => $hc ) {
+		$perm( $hc[0], $hc[1] );
+		$out[ $k ] = $dispatch();
+	}
+	$out['posts_kept'] = count( $GLOBALS['pf_posts'] ) === $before;
+	echo json_encode( $out );
 } elseif ( 'stale' === $case ) {
 	$oid = pf_site( array( 'publish', 'draft' ), array( 44, 2 ), 3 );
 	$r   = ( $reset['callback'] )();
@@ -81,8 +105,10 @@ case_() { # case_ <label> <case> <want json>
   local got; got=$(php "$t/harness.php" "$here/php/pf-conformance-throwaway.php" "$2" 2>&1)
   if [ "$got" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1"; echo "  want $3"; echo "  got  $got"; fails=$((fails+1)); fi
 }
-case_ "both routes are registered; the reset is POST, refused without edit_theme_options, allowed with it" routes \
-  '{"throwaway":true,"method":"POST","denied":false,"allowed":true}'
+case_ "both routes are registered; the reset is POST; allowed only with the header AND edit_theme_options" routes \
+  '{"throwaway":true,"method":"POST","all_three":true,"no_header":false,"header_not_1":false,"no_capability":false}'
+case_ "refused without the header (no spike token) or without the capability, and NOTHING is deleted" refused \
+  '{"no_header":"refused","no_capability":"refused","posts_kept":true}'
 case_ "stale styles (a published post with 44 revisions, a draft with 2): all gone, reported; another post and its revisions kept; the theme.json cache cleared" stale \
   '{"reset":true,"posts":2,"revisions":46,"left_posts":0,"left_revisions":0,"other_kept":true,"cleaned":1}'
 case_ "no styles post at all: nothing to delete, 0 left" empty \

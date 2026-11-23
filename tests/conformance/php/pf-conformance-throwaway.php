@@ -9,9 +9,22 @@
  * assume a fresh wp-env, where no user global-styles post has a revision. Core REST has no DELETE for a
  * wp_global_styles post or its revisions, so earlier runs' revisions stayed (44 on cf759hw). POST
  * pf-conformance/v1/reset-global-styles deletes every wp_global_styles post with its revisions; WordPress makes the
- * post again, empty, on the next request that asks for it. Only an admin who can edit theme options may call it,
- * and only this marker registers it, so only a throwaway has it. Tested in tests/conformance/throwaway-php-test.sh.
+ * post again, empty, on the next request that asks for it.
+ *
+ * The gate, all three required (anything less is refused, 401/403, and nothing is deleted):
+ *   1. THE THROWAWAY: only this marker registers the route, and deploy/conformance.sh lets the marker onto a site only
+ *      with CONFORMANCE=on, THROWAWAY=1 and a named site that is not in deploy/live-sites/ or deploy/wfp/live-sites/.
+ *   2. THE SPIKE TOKEN: the request carries x-pf-conformance-reset: 1, and the Worker (index.js, handleInner) deletes
+ *      that header before PHP runs unless x-spike-token matches the site's SPIKE_TOKEN secret. PHP never sees the
+ *      token; it sees the header only when the Worker has checked it.
+ *   3. THE USER: a logged-in user who can edit theme options.
+ * Tested in tests/conformance/throwaway-php-test.sh (and the Worker's strip in spikes/b2-wordpress/tests).
  */
+function pf_conformance_reset_allowed() {
+	return isset( $_SERVER['HTTP_X_PF_CONFORMANCE_RESET'] ) && '1' === $_SERVER['HTTP_X_PF_CONFORMANCE_RESET']
+		&& current_user_can( 'edit_theme_options' );
+}
+
 function pf_conformance_global_styles_ids() {
 	return get_posts(
 		array(
@@ -84,9 +97,7 @@ add_action(
 			'/reset-global-styles',
 			array(
 				'methods'             => 'POST',
-				'permission_callback' => function () {
-					return current_user_can( 'edit_theme_options' );
-				},
+				'permission_callback' => 'pf_conformance_reset_allowed',
 				'callback'            => 'pf_conformance_reset_global_styles',
 			)
 		);

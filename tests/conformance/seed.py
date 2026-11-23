@@ -56,7 +56,8 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
   0b. SEED_RESET_GLOBAL_STYLES=1 (the gb seed, #1401): before item 1, on a marked throwaway only, POST
      pf-conformance/v1/reset-global-styles (the marker mu-plugin) deletes every wp_global_styles post with its
      revisions, as a fresh wp-env has none. Gutenberg's style revision specs count revisions, and core REST cannot
-     delete them. Checked: the route answers 200 and reports 0 posts and 0 revisions left. A marker without the
+     delete them. The route needs the throwaway marker AND the spike token (SPIKE_TOKEN; the seed refuses without it,
+     and sends x-pf-conformance-reset: 1, which the Worker passes to PHP only with a valid token). Checked: the route answers 200 and reports 0 posts and 0 revisions left. A marker without the
      route (404) fails, named. Recorded as global_styles_reset in seed.json.
   9. --theme <slug> (optional): activates that installed theme (the admin's own activation link on themes.php) and
      checks it is the active stylesheet. joan's runner asks twentytwentythree before wc and wc-api: WooCommerce's
@@ -277,10 +278,10 @@ def js(body):
         return None
 
 
-def rest(o, nonce, route, data=None, method=None):
+def rest(o, nonce, route, data=None, method=None, extra=None):
     q = route.split("?", 1)
     path = "/?rest_route=" + q[0] + ("&" + q[1] if len(q) > 1 else "")
-    hd = {"X-WP-Nonce": nonce}
+    hd = dict({"X-WP-Nonce": nonce}, **(extra or {}))
     if data is not None and not isinstance(data, bytes):
         data = json.dumps(data).encode()
         hd["Content-Type"] = "application/json"
@@ -530,7 +531,10 @@ def main():
     if RESET_GLOBAL_STYLES:
         if not marked:
             refuse("SEED_RESET_GLOBAL_STYLES=1 needs the throwaway marker (a local site without it is never reset)")
-        cg, bg = rest(a, n, "/pf-conformance/v1/reset-global-styles", {}, "POST")
+        if not os.environ.get("SPIKE_TOKEN"):
+            refuse("SEED_RESET_GLOBAL_STYLES=1 needs SPIKE_TOKEN: the reset route is gated by the throwaway AND the spike token")
+        # req() adds x-spike-token for this site; the Worker passes x-pf-conformance-reset to PHP only when it matches.
+        cg, bg = rest(a, n, "/pf-conformance/v1/reset-global-styles", {}, "POST", {"x-pf-conformance-reset": "1"})
         bg = bg if isinstance(bg, dict) else {}
         gs = {k: bg.get(k) for k in ("posts", "revisions", "left_posts", "left_revisions")}
         if cg == 404:
