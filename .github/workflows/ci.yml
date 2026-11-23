@@ -336,6 +336,10 @@ jobs:
         run: |
           node --test spikes/b2-wordpress/tests/object-error.test.mjs
           node --test spikes/b2-wordpress/tests/opcache-size.test.mjs
+      - name: a memory-reset retry re-sends the request body (issue #1352)
+        # retry-body.mjs: new Request(req) disturbs the body, so the second attempt
+        # threw before fetch. The bytes are read once and sent on every attempt.
+        run: node --test spikes/b2-wordpress/tests/retry-body.test.mjs
       - name: a doubled slash redirects only GET, HEAD and OPTIONS (issue #1005)
         # A 301 on POST //wp-json/wc/v3/orders is followed as GET, so the body is lost.
         run: node --test spikes/b2-wordpress/tests/slash-path.test.mjs

@@ -15,6 +15,7 @@ import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from 
 import { wpCronState, idleDecision, parseGmt, IDLE_KEY } from './cron-idle.mjs';
 import { tickAlarmPlan, armBeforeRun, rearm, pullIn, extendIfOurs, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY, emailRushDue, emailAlarmAt, EMAIL_DUE_KEY, EMAIL_RETRY_MS } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
+import { readRetryBody, attemptRequest } from './retry-body.mjs';
 import { askPurgeAfterAnswer } from './purge-after-php.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
 import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, tagCallId, recheckStartBy, disconnectAnswer, disconnectSignal, tickFetch, tickResponse, TICK_PATH, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
@@ -4365,11 +4366,14 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 	// #708: a start-by per attempt: the object never starts a request it has not granted by then, so the deadline
 	// above only ever catches a request that started. An exempt path never gets one (review 6).
 	const startByQ = startByMs(env, objectDeadlineMs, { exempt: startByExempt(url.pathname) }); // review2 6: control paths too
+	// #1352: new Request(req) disturbs the body, so a retry threw before the second
+	// fetch. attemptRequest sends the same bytes on every attempt.
+	const replay = await readRetryBody(req);
 	const res = await fetchWithMemoryRetry(
 		() => {
 			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), hint ? { locationHint: hint } : undefined);
 			const ac = objectDeadlineMs > 0 ? new AbortController() : null;
-			const fwd = new Request(req);
+			const fwd = attemptRequest(req, replay);
 			// Only this Worker sets the Turnstile answer: a copy from the client is always dropped.
 			setResultHeader(fwd.headers, pre && pre.value);
 			// The same for the overflow mark (#296 (3)).
