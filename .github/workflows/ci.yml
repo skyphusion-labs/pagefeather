@@ -484,7 +484,7 @@ jobs:
       - name: x-pf-probe links one request's events at the gateway, Pages and PHP (issue #1328)
         # probe-trace.mjs: one m: probe-trace line per entrypoint for a valid id; no line and one header read on normal traffic.
         run: node --test spikes/b2-wordpress/tests/probe-trace.test.mjs
-      - name: With PF_TRACE_PHP_RUNS=1 only, one m: php-run line per PHP run; nothing in deploy renders it (issue #1277)
+      - name: "With PF_TRACE_PHP_RUNS=1 only, one m: php-run line per PHP run; nothing in deploy renders it (issue #1277)"
         # php-run-trace.mjs and index.js withPhp: the main measurement's PHP intervals. Unset: no line.
         run: node --test spikes/b2-wordpress/tests/php-run-trace.test.mjs
       - name: A busy answer for a request that misses a stored page copy is a 429, never the stale copy (issue #1328)
