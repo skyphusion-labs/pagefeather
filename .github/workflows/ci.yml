@@ -286,6 +286,7 @@ jobs:
       - name: Admin memory trace is operator-only, and its harness summary (#434)
         run: |
           node --test spikes/b2-wordpress/tests/mem-trace.test.mjs
+          node --test spikes/b2-wordpress/tests/operator-headers.test.mjs
           python3 -I tests/wfp/admin-mem-test.py
       - name: Memory trace hooks mode against WordPress's own hook code (#504)
         # The three wp-includes files of the pinned WordPress (spikes/b2-wordpress/build.sh

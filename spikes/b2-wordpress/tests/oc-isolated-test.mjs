@@ -28,7 +28,7 @@ ok('the default allowlist excludes posts/post_meta', def.length > 0 && !/\bpost/
 ok('#491: the default allowlist excludes options (a stale alloptions across isolates is a lost update)', def.length > 0 && !/(^|,)options(,|$)/.test(def));
 
 // The per-request off bracket is spike-gated, like x-ast-cache-off.
-ok('x-oc-off is stripped without a spike token', src.includes("if (!spikeOk) delete headers['x-oc-off'];"));
+ok('x-oc-off is stripped without a spike token', src.includes('stripOperatorHeaders(headers, spikeOk);') && readFileSync(new URL('../operator-headers.mjs', import.meta.url), 'utf8').includes("'x-oc-off'"));
 
 // Instrumentation: per-table DB counts, per-group cache stats, the x-oc-stats header.
 ok('per-table DB counting on the approach-A path', src.includes('if (m.mysql !== undefined) countTable(String(m.mysql));'));
