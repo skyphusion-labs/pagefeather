@@ -177,6 +177,8 @@ ji = next((i for i, l in enumerate(lines) if "base64 -d > /root/job.sh" in l), N
 check("HOME: the user-data exports HOME=/root before the job", hi is not None and ji is not None and hi < ji, True)
 envrun = subprocess.run(["env", "-i", "PATH=/usr/bin:/bin", "bash", "-c", "set -u; " + lines[hi] + "; echo \"[$HOME]\""], capture_output=True, text=True)
 check("HOME: under env -i and set -u, that line gives a HOME", envrun.stdout.strip(), "[/root]")
+import shutil
+for _d in TEMPS: shutil.rmtree(_d, ignore_errors=True)
 check("cleanup: every temp dir this test made is gone", [d for d in TEMPS if os.path.exists(d)], [])
 print("%d failing check(s)" % fails)
 sys.exit(1 if fails else 0)
