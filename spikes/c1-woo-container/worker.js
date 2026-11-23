@@ -7,6 +7,7 @@
 // for them.
 import { isProductView, gatewayMayWarm, warmStart, warmInfo } from './warm.js';
 import { protectedUploadKey } from '../b2-wordpress/upload-scope.mjs'; // the same rule as b2: one copy
+import { stripOperatorHeaders } from '../b2-wordpress/operator-headers.mjs'; // the same strip as b2: one copy (#1432)
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { WorkerEntrypoint, cache } from 'cloudflare:workers';
 
@@ -470,10 +471,21 @@ function storefrontCacheable(req, url) {
 	return (req.method === 'GET' || req.method === 'HEAD') && !hasState(req) && !NO_CACHE_PATH.test(url.pathname) && !NO_CACHE_PARAM.some((k) => url.searchParams.has(k));
 }
 
+// #1432: the operator switches PHP reads leave the Worker only with a valid spike token, as in b2's handleInner.
+// The container sees the request headers as they are, so without the token they are removed here, before either path.
+function withoutOperatorHeaders(req) {
+	const h = {};
+	req.headers.forEach((v, k) => (h[k] = v));
+	const n = Object.keys(h).length;
+	stripOperatorHeaders(h, false);
+	return Object.keys(h).length === n ? req : new Request(req, { headers: h });
+}
+
 export default {
 	async fetch(req, env, ctx) {
 		const url = new URL(req.url);
 		const spikeOk = env.SPIKE_TOKEN && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
+		if (!spikeOk) req = withoutOperatorHeaders(req);
 		if (url.pathname === '/_store-stop') {
 			if (!spikeOk) return new Response('forbidden', { status: 403 });
 			try {
