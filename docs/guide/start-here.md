@@ -5,7 +5,7 @@
 We use two names on this page:
 
 - **The built-in database option.** Your site's database lives inside Cloudflare, next to the site. You need no MySQL server. This page installs this option.
-- **The MySQL option.** Your site uses a MySQL database that you run somewhere else. It is for a real WooCommerce store. It has [its own guide](onboarding.md).
+- **The MySQL option.** Your site uses a MySQL database that you run somewhere else. It is for a real WooCommerce store. It has [its own Start here](start-here-mysql.md).
 
 ## 1. How do I install it?
 
@@ -87,7 +87,7 @@ Keep this password safe. The folder `deploy/terraform/terraform.tfstate.d/` hold
 **Other ways to install** (one line each):
 
 - **Many sites on one account:** the [site manager](../../deploy/oneclick/README.md), with a Deploy button and no terminal, on Workers for Platforms ($30 a month). See also the [operator guide](operator.md).
-- **A real WooCommerce store:** the MySQL option, in [its own guide](onboarding.md).
+- **A real WooCommerce store:** the MySQL option, in [its own Start here](start-here-mysql.md).
 - **Move an existing site here:** [import from a mysqldump](../../deploy/import/README.md).
 - **Every setting, for engineers:** the [full reference](../../deploy/README.md).
 

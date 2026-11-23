@@ -9,7 +9,7 @@ This page is the map. The repository holds a framework you run on your own Cloud
 
 ## Run a site
 
-- [tier-a-quickstart.md](tier-a-quickstart.md). **Pre-alpha testers start here (#1077).** Tier A (approach A, Hyperdrive) from one `deploy.sh` command: prerequisites, the database region (`PLACEMENT`), the Terraform state, update, remove, and every refusal.
+- [guide/start-here-mysql.md](guide/start-here-mysql.md). Start here for a real WooCommerce store: the MySQL option, step by step (pre-alpha, #1077).
 - [guide/framework.md](guide/framework.md). The quickstart, the default integrations, and edge security.
 - [guide/onboarding.md](guide/onboarding.md). Approach A, from a MySQL choice to a site.
 - [guide/from-lamp.md](guide/from-lamp.md). A LAMP WordPress host, mapped onto this stack.
