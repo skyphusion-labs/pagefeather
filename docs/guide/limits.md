@@ -190,6 +190,31 @@ Measured on a real store imported for skyphusion-labs/ggc#101. It runs WooCommer
 
 So memory, not the code, decides whether a store this heavy runs on b-dosql. With Rank Math the requests reach 119 MiB of wasm: the top of the measured write ceiling (117 to 119 MiB, the figure that binds; see the three figures above). The isolate cap itself is 128 MB. The bundle has a limit too: the Worker limit is 64 MiB uncompressed. `deploy/wfp/lib.sh bundle_size_check` stops an upload above `BUNDLE_MAX_MIB` (default 62), and `build_dosql`, `site.sh up` and `site update` all run it. If your store needs Rank Math, or a plugin set this heavy, approach A (MySQL through Hyperdrive) is the better fit, rather than b-dosql.
 
+## The 18 checked plugins
+
+These are pinned and checked, so you can add them with `PLUGINS="slug slug"` when you deploy. Pinned does not mean it fits: see [How many plugins fit](#how-many-plugins-fit), which names the ones that are too big. The pinned versions are in the evidence file ([evidence](../../tests/plugins/suite.txt)).
+
+| Plugin | Slug |
+| --- | --- |
+| Elementor | `elementor` |
+| Yoast SEO | `wordpress-seo` |
+| Contact Form 7 | `contact-form-7` |
+| Classic Editor | `classic-editor` |
+| LiteSpeed Cache | `litespeed-cache` |
+| Site Kit by Google | `google-site-kit` |
+| Akismet | `akismet` |
+| WPForms Lite | `wpforms-lite` |
+| All-in-One WP Migration | `all-in-one-wp-migration` |
+| Wordfence | `wordfence` |
+| WP Mail SMTP | `wp-mail-smtp` |
+| Rank Math SEO | `seo-by-rank-math` |
+| UpdraftPlus | `updraftplus` |
+| Yoast Duplicate Post | `duplicate-post` |
+| Duplicate Page | `duplicate-page` |
+| Jetpack | `jetpack` |
+| Really Simple SSL | `really-simple-ssl` |
+| WPCode (Insert Headers and Footers) | `insert-headers-and-footers` |
+
 ## How many plugins fit
 
 The limit is memory per request. It shows up on the heaviest admin pages. It is not a count of installed plugins.

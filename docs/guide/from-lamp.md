@@ -9,7 +9,7 @@ something up, we say so plainly.
 It leads into the framework quickstart (`docs/guide/framework.md`). If the words "Worker", "Durable
 Object" and "R2" are new to you, read this page first and the quickstart second, for the commands.
 In short: a Worker is code that Cloudflare runs at its edge locations; a Durable Object is one
-Cloudflare object that keeps state, here a site's PHP and its SQLite database; R2 is Cloudflare's
+Cloudflare object that keeps state, here a site's PHP and its SQLite database (the built-in database option, `b-dosql` in the commands; the MySQL option is approach A); R2 is Cloudflare's
 object storage.
 
 ## The one idea
@@ -94,11 +94,11 @@ deactivating a plugin, and switching themes, still work in wp-admin.
 Why this is good for you as well as a limit: nobody can install or edit PHP code on a live site,
 not an attacker with a stolen admin password and not a well-meaning client. What runs is exactly
 what you built and reviewed, and an update is a rebuild you can test first and roll back. The
-detail is in `deploy/wfp/README.md` and [../plugins.md](../plugins.md).
+detail is in `deploy/wfp/README.md` and the [evidence](../plugins.md).
 
 The code ships with the build. By default (#595), most of the plugin, theme and OPcache files sit
 next to the site Worker as remote packs, fetched as PHP needs them, instead of inside the Worker
-bundle ([../site-remote-569.md](../site-remote-569.md)). You do not need to do anything for this.
+bundle ([evidence](../site-remote-569.md)). You do not need to do anything for this.
 
 ## WooCommerce, and the one real limit
 
@@ -139,7 +139,7 @@ store.
 Where it stands, plainly:
 
 - In our 7-screen admin round on that store, the remote packs (now the default, #595) took the
-  lost requests from 95 of 210 to 5 of 210 ([../admin-memory-matrix.md](../admin-memory-matrix.md), the
+  lost requests from 95 of 210 to 5 of 210 ([evidence](../admin-memory-matrix.md), the
   D/R row, 2026-11-14). Every save that answered 302 read back on both arms.
 - Five lost of 210 is still not zero, and the editor screens are where it happens.
 - Whether wp-admin runs on Workers or in a Cloudflare Container is still an open question. It is
