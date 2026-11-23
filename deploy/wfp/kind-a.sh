@@ -82,6 +82,8 @@ print("yes" if any(isinstance(x, dict) and x.get("title") == sys.argv[1] for x i
 # (render-conf.sh placement_check, the same rule as deploy.sh): the Worker runs next to the database (#1054).
 a_inputs_check() {
   local v
+  # #1364: before the database checks, so a bad bound stops the add before any step.
+  ( . "$WFP/../db-query-timeout.sh" && db_query_timeout_check ) || return 2
   for v in MYSQL_HOST MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD; do
     [ -n "${!v:-}" ] || { echo "KIND=a needs $v (the owner's MySQL database)" >&2; return 2; }
   done

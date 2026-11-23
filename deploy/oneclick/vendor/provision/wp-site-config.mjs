@@ -114,6 +114,23 @@ function assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDis
   if (v.objectDisconnectShed !== undefined) vars.OBJECT_DISCONNECT_SHED = v.objectDisconnectShed;
 }
 
+// DB_QUERY_TIMEOUT_MS (#1364, #1359): how long one MySQL query may take, in ms.
+// Digits only, 1 to 600000. Unset adds no var (the engine default, 30 s). A bad
+// value throws, so the callers refuse before a bundle is read or an API call is
+// made. The same bounds as queryTimeoutMs, but a bad value is refused here, not
+// clamped. Returns { dbQueryTimeoutMs } or {}.
+export function dbQueryTimeoutInputs(env = {}) {
+  const raw = env.DB_QUERY_TIMEOUT_MS;
+  if (raw === undefined || raw === null || raw === '') return {};
+  const s = String(raw);
+  if (!/^[0-9]+$/.test(s)) throw new Error(`DB_QUERY_TIMEOUT_MS must be an integer from 1 to 600000, not ${s}`);
+  let n;
+  try { n = BigInt(s); }
+  catch { throw new Error(`DB_QUERY_TIMEOUT_MS must be an integer from 1 to 600000, not ${s}`); }
+  if (n < 1n || n > 600000n) throw new Error(`DB_QUERY_TIMEOUT_MS must be an integer from 1 to 600000, not ${s}`);
+  return { dbQueryTimeoutMs: n.toString() };
+}
+
 // ---- b-dosql integration-descriptor table (#201 Phase 1) --------------------
 // The provisioning core builds a b-dosql site's bindings, vars and generated
 // secrets from a TABLE of integration descriptors, not a hand-edited inline
@@ -598,6 +615,8 @@ export function aVars({
   objectCallDeadlineS, objectStartByS, objectDisconnectShed,
   // #1036: on only when the bundle carries the packs.
   opcacheRemote, siteRemote,
+  // #1364: the per-query bound. Unset adds no var.
+  dbQueryTimeoutMs,
 } = {}) {
   if (!siteOrigin) throw new Error('aVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
@@ -642,6 +661,10 @@ export function aVars({
   assignPageCacheProduct(vars, { wooActive, importPlugins, plugins, pageCacheProductTtl, store });
   assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed });
   assignRemotePacks(vars, { opcacheRemote, siteRemote });
+  // #1364: canonical digits, or a throw that names the setting.
+  if (dbQueryTimeoutMs !== undefined && dbQueryTimeoutMs !== null && dbQueryTimeoutMs !== '') {
+    vars.DB_QUERY_TIMEOUT_MS = dbQueryTimeoutInputs({ DB_QUERY_TIMEOUT_MS: dbQueryTimeoutMs }).dbQueryTimeoutMs;
+  }
   return Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text }));
 }
 
@@ -663,6 +686,7 @@ export function aBindings({
   mailFrom, mailFromName, extra = [],
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
   objectCallDeadlineS, objectStartByS, objectDisconnectShed,
+  dbQueryTimeoutMs,
   siteName, siteTitle,
   opcacheRemote, siteRemote,
 } = {}) {
@@ -674,7 +698,7 @@ export function aBindings({
   // only if the caller already knows it (e.g. a re-provision passing the id).
   if (ocKvNamespaceId) ocKv.namespace_id = ocKvNamespaceId;
   return [
-    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, siteName, siteTitle, opcacheRemote, siteRemote }),
+    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, dbQueryTimeoutMs, siteName, siteTitle, opcacheRemote, siteRemote }),
     { type: 'images', name: 'IMAGES' },
     { type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket },
     { type: 'hyperdrive', name: 'HYPERDRIVE', id: hyperdriveId },

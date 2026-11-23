@@ -15,6 +15,7 @@ unset MAIL_FROM MAIL_FROM_NAME SITE_TITLE
 unset HTTP_ALLOW_HOSTS
 unset WOO_EXTRAS
 unset OBJECT_START_BY_S OBJECT_CALL_DEADLINE_S OBJECT_DISCONNECT_SHED
+unset DB_QUERY_TIMEOUT_MS
 HERE=$(cd "$(dirname "$0")" && pwd)
 LIB=${1:-$HERE/../lib.sh}
 # shellcheck disable=SC1090
