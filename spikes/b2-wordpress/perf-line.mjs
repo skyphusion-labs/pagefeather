@@ -4,6 +4,29 @@
 // round trip (on A every MySQL query through Hyperdrive is one bridge call), the per-query average, the isolate and
 // the runtime. Numbers, ids and the PATH only: never the query string, which on a store carries order keys and logins.
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+// #1402: the R2 and Images bridge ops one request ran. r2op (index.js) keeps a running {op: {n, ms}} per isolate in
+// stats.r2; r2OpsSnapshot copies it at the request's start, and r2OpsDelta is what this request added (only the ops
+// that ran). image/images are the sub-sizes through the Images binding (their ms is the batch wall: jobs run in parallel).
+export function r2OpsSnapshot(r2) {
+	const o = {};
+	for (const [k, v] of Object.entries(r2 || {})) o[k] = { n: v.n, ms: v.ms };
+	return o;
+}
+export function r2OpsDelta(now, start) {
+	const o = {};
+	for (const [k, v] of Object.entries(now || {})) {
+		const s = (start && start[k]) || { n: 0, ms: 0 };
+		const n = v.n - s.n;
+		if (n > 0) o[k] = { n, ms: v.ms - s.ms };
+	}
+	return Object.keys(o).length ? o : undefined;
+}
+function r2Field(r) {
+	if (!r || typeof r !== 'object') return undefined;
+	const o = {};
+	for (const [k, v] of Object.entries(r)) if (v && num(v.n) !== undefined && num(v.ms) !== undefined) o[k] = { n: v.n, ms: v.ms };
+	return Object.keys(o).length ? o : undefined;
+}
 export function aPerfLine(f) {
 	const path = typeof f.path === 'string' ? f.path.split('?')[0] : undefined;
 	const dbN = num(f.dbN);
@@ -57,6 +80,7 @@ export function aPerfLine(f) {
 		l2Hits: num(f.l2Hits),
 		l2Misses: num(f.l2Misses),
 		l2Ms: num(f.l2Ms),
+		r2: r2Field(f.r2), // #1402: {op: {n, ms}}, the R2 and Images bridge ops this request ran
 	};
 	for (const k of Object.keys(line)) if (line[k] === undefined) delete line[k];
 	return line;
