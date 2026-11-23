@@ -27,7 +27,7 @@ export WFP_S3_ENDPOINT="http://127.0.0.1:$(cat "$T/port")" WFP_S3_KEY_ID=test-ke
 ACCOUNT_ID=test
 # shellcheck disable=SC1091
 . "$HERE/../lib.sh"
-ROOT=$T/root; mkdir -p "$ROOT/deploy"; cp -p "$REPO/deploy/wr" "$ROOT/deploy/wr"
+ROOT=$T/root; mkdir -p "$ROOT/deploy/wfp"; cp -p "$REPO/deploy/wr" "$ROOT/deploy/wr"; cp -p "$REPO/deploy/wfp/obs_settings.py" "$ROOT/deploy/wfp/"
 python3 -I -c 'import shutil, sys; shutil.copytree(sys.argv[1], sys.argv[2], symlinks=True)' "$REPO/deploy/tools" "$ROOT/deploy/tools"
 WR=$ROOT/deploy/wr
 
@@ -93,6 +93,7 @@ SAVED=$(mktemp -d "$T/saved.XXXX")
 got=$(save_rollback_tree wp-wfp-s-media ab96cafab127 "$SAVED" 2> "$T/s.log"); check "save_rollback_tree fetches the artifact" "$got:$(grep -c "site's own artifact" "$T/s.log")" "ab96cafab127:1"
 IFS=$'\t' read -r RBROOT RB RBWR <<< "$(rollback_deploy_dir "$SAVED")"
 check "rollback_deploy_dir puts the tree at the app's own path in a mirror, with its own wrangler" "${RB#"$RBROOT"}:${RBWR#"$RBROOT"}" "/spikes/b2-app:/deploy/wr"
+check "  and the mirror carries obs_settings.py next to its deploy/wr (#1410: deploy/wr re-applies the log redaction)" "$([ -f "$RBROOT/deploy/wfp/obs_settings.py" ] && echo yes || echo no)" "yes"
 check "  node_modules and deploy/tools are real copies, not links" "$([ -d "$RB/node_modules" ] && [ ! -L "$RB/node_modules" ] && [ -d "$RBROOT/deploy/tools/node_modules" ] && [ ! -L "$RBROOT/deploy/tools" ] && echo copies || echo links)" copies
 check "  the mirror is not inside the app's root" "$([[ $RBROOT == "$ROOT"* ]] && echo inside || echo outside)" outside
 cp "$FA/wrangler.deploy.slim-test.toml" "$RB/wrangler.rollback.toml"

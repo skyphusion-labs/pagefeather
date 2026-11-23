@@ -12,11 +12,16 @@ BIN="$TOOLS/node_modules/.bin/wrangler"
 # pinned wrangler has no config key for it), and a store's query strings hold order keys and logins.
 # So after every successful deploy, re-apply it and read it back, or turn the logs off and fail
 # loudly (obs_settings.py after-deploy). This is the one wrangler every path calls, a hand-run one too.
+# A --dry-run uploads nothing, so it needs no re-apply. A copy of this file without wfp/obs_settings.py next to it
+# (a mirror or a test root) cannot re-apply, so a real deploy through it fails loudly rather than passing.
 if [ "${1:-}" = deploy ]; then
   rc=0; "$BIN" "$@" || rc=$?
   [ "$rc" = 0 ] || exit "$rc"
   shift
-  python3 -I "$(dirname "${BASH_SOURCE[0]}")/wfp/obs_settings.py" after-deploy "$@"
+  case " $* " in *" --dry-run "*) exit 0 ;; esac
+  OBS="$(dirname "${BASH_SOURCE[0]}")/wfp/obs_settings.py"
+  [ -f "$OBS" ] || { echo "deploy/wr: the deploy ran, but $OBS is missing, so this cannot re-apply the Workers Logs query-string redaction (#1410). If the config turns logs on, run obs_settings.py redact-or-off for the script NOW." >&2; exit 3; }
+  python3 -I "$OBS" after-deploy "$@"
   exit $?
 fi
 exec "$BIN" "$@"

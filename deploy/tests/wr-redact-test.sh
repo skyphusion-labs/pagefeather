@@ -123,5 +123,15 @@ ok "another command passes straight through (rc $rc, no PATCH)" "$([ $rc = 0 ] &
 api good; TOK='' wr "$T/g" "$C" deploy --config on.toml; rc=$?
 ok "logs on and no CLOUDFLARE_API_TOKEN to check with: fails loudly (rc $rc)" "$([ $rc != 0 ] && grep -q 'cannot re-apply' "$T/out" && echo 1 || echo 0)"
 
+echo "6. a deploy/wr copied WITHOUT deploy/wfp/obs_settings.py (as a mirror or a test root can be)"
+mkdir -p "$T/bare/deploy/tools/node_modules/.bin"; cp "$ROOT/deploy/wr" "$T/bare/deploy/wr"; cp "$T/g/deploy/tools/node_modules/.bin/wrangler" "$T/bare/deploy/tools/node_modules/.bin/"
+api good; wr "$T/bare" "$C" deploy --dry-run --outdir "$T/dry2" --config on.toml; rc=$?
+ok "a --dry-run still passes, with no settings step (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
+api good; wr "$T/bare" "$C" deploy --config on.toml; rc=$?
+ok "a real deploy fails LOUDLY (exit 3), naming the missing re-apply (rc $rc)" "$([ $rc = 3 ] && grep -q 'cannot re-apply' "$T/out" && echo 1 || echo 0)"
+
+echo "7. the rollback mirror (deploy/wfp/lib.sh rollback_deploy_dir) carries obs_settings.py next to its deploy/wr"
+ok "rollback_deploy_dir copies deploy/wfp/obs_settings.py into the mirror" "$(awk '/^rollback_deploy_dir\(\)/{f=1} f&&/^}/{exit} f' "$ROOT/deploy/wfp/lib.sh" | grep -q 'deploy/wfp/obs_settings.py' && echo 1 || echo 0)"
+
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]
