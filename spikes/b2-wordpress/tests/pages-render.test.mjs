@@ -84,12 +84,14 @@ test('#1328 index.js: on a placed render pageCacheHeaders seals; the gateway nev
 	assert.ok(un < pages.indexOf('if (isOperatorRequest(req)) noStoreAnywhere(out.headers);'), 'before the operator no-store, which must win');
 });
 test('#1328 a request with cart or session cookies is never sent to the cached entrypoint (pageCacheRoute and WP_COOKIE)', () => {
-	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	const m = /const WP_COOKIE = (\/.*\/);\n/.exec(src);
+	// #1328: the page-cache conditions live in page-copy.mjs.
+	const src = readFileSync(new URL('../page-copy.mjs', import.meta.url), 'utf8');
+	const m = /export const WP_COOKIE = (\/.*\/);\n/.exec(src);
 	assert.ok(m, 'WP_COOKIE');
 	const re = eval(m[1]);
 	for (const c of ['woocommerce_cart_hash=abc', 'woocommerce_items_in_cart=1', 'wp_woocommerce_session_0123=x', 'wordpress_logged_in_abc=x', 'other=1; woocommerce_cart_hash=abc']) assert.ok(re.test(c), c);
 	assert.equal(re.test('foo=bar'), false, 'a non-WordPress cookie does not split the cache');
-	const route = src.slice(src.indexOf('function pageCacheRoute(req, url, env) {'), src.indexOf('function pageCacheHeaders('));
-	assert.match(route, /!WP_COOKIE\.test\(req\.headers\.get\('cookie'\) \|\| ''\)/);
+	const route = src.slice(src.indexOf('export function pageCacheRoute(req, url, env) {'), src.indexOf('export function storeRequestSide('));
+	assert.match(route, /!hasWpCookie\(req\)/);
+	assert.match(src, /const hasWpCookie = \(req\) => WP_COOKIE\.test\(req\.headers\.get\('cookie'\) \|\| ''\);/);
 });

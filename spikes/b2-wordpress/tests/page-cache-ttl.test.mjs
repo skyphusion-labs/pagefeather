@@ -77,9 +77,9 @@ test('#1328: a placed guest render through pageCacheHeaders leaves the gateway n
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	const start = src.indexOf('function pageCacheHeaders(');
 	const fn = src.slice(start, src.indexOf('\n}\n', start) + 2);
-	const consts = ['WP_COOKIE', 'PAGE_CACHE_NO_PATH', 'PAGE_CACHE_NO_PARAM'].map((n) => src.match(new RegExp('^const ' + n + ' = [^\\n]*;$', 'm'))[0]).join('\n');
-	const pageCacheHeaders = new Function('PRODUCT_PAGE_HEADER', 'productTtl', 'isProductPage', 'edgeCacheControl', 'isPlacedRender', 'sealPlacedCache',
-		consts + '\n' + fn + '\nreturn pageCacheHeaders;')(PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl, isPlacedRender, sealPlacedCache);
+	// #1328: the request conditions live in page-copy.mjs; the real storeRequestSide is passed in.
+	const pageCacheHeaders = new Function('PRODUCT_PAGE_HEADER', 'productTtl', 'isProductPage', 'edgeCacheControl', 'storeRequestSide', 'isPlacedRender', 'sealPlacedCache',
+		fn + '\nreturn pageCacheHeaders;')(PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl, storeRequestSide, isPlacedRender, sealPlacedCache);
 	const run = (req) => {
 		const out = new Headers();
 		pageCacheHeaders(req, new URL(req.url), { httpStatusCode: 200, headers: {} }, out, {}, 0);
