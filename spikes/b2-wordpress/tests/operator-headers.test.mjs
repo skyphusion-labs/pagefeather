@@ -26,6 +26,10 @@ test('a case-only variant (X-OC-OFF) arrives lower-cased from Headers and is rem
 	const h = stripOperatorHeaders(asPhpGets([['X-OC-OFF', '1']]), false);
 	assert.deepEqual(Object.keys(h), []);
 });
+test('the helper matches the PHP mapping on its own, even for a raw object not built by Headers', () => {
+	const h = stripOperatorHeaders({ 'X-OC-OFF': '1', X_MEM_TRACE: '1', 'x-pf-WC_defer': 'off', keep: 'y' }, false);
+	assert.deepEqual(Object.keys(h), ['keep']);
+});
 test('with a valid spike token every operator header reaches PHP', () => {
 	const h = stripOperatorHeaders(asPhpGets([['x-oc-off', '1'], ['x_mem_trace', '1']]), true);
 	assert.deepEqual(Object.keys(h).sort(), ['x-oc-off', 'x_mem_trace']);
