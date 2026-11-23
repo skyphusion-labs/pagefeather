@@ -1,8 +1,10 @@
-# Onboarding: from "I want a site" to a running approach-A site
+# Onboarding: from "I want a site" to a running site on the MySQL option
 
 **Status: current.** Both pieces have merged: the onboarding step (PR #242) and `site add --kind a` (PR #243). The commands below are the real ones.
 
-This page is for you if you want to run WordPress or WooCommerce sites on your own Cloudflare account, on the path that scales out ([approach A](../approach-a-overview.md)). If you would rather have zero outside infrastructure, the b-dosql kind in [framework.md](framework.md) is simpler; it needs no onboarding step.
+This page is for you if you want to run WordPress or WooCommerce sites on your own Cloudflare account, on the path that scales out: the MySQL option ([evidence and design](../approach-a-overview.md)). If you would rather have zero outside infrastructure, the b-dosql kind in [framework.md](framework.md) is simpler; it needs no onboarding step.
+
+**Names on this page.** The MySQL option is approach A in the engineering docs (PHP in a Worker, MySQL through Hyperdrive), and a site of that kind is `--kind a`. The built-in database option is `b-dosql`.
 
 ## The idea in one paragraph
 
@@ -22,7 +24,7 @@ Approach A needs a MySQL database, and you choose where it lives. An onboarding 
 
 ### Step 1: choose a MySQL provider
 
-Pick the one that suits you. The choice table, with measured speed and cost, is in [../approach-a-overview.md](../approach-a-overview.md#choose-a-database-provider). In short:
+Pick the one that suits you. The short table below is enough to choose. The full table, with measured speed and cost, is the [evidence](../approach-a-overview.md#choose-a-database-provider).
 
 | Choice | Pick it when |
 | --- | --- |
@@ -44,7 +46,7 @@ The onboarding step reads your provider choice and makes the Hyperdrive configur
 
 - It uses the database **host name**, not the IP address. By IP, every query measured about 6 times slower.
 - It turns the Hyperdrive **query cache off**. The default cache serves stale WordPress reads.
-- It sets the right `sql_mode` handling for a strict provider (PlanetScale, Azure MySQL 8.0). See [../approach-a2.md](../approach-a2.md).
+- It sets the right `sql_mode` handling for a strict provider (PlanetScale, Azure MySQL 8.0). See the [details](../approach-a2.md).
 - For PlanetScale it uses the direct host, not the optimized host.
 - It places the Worker in the region of the database.
 
@@ -90,12 +92,12 @@ After a site is added:
 
 | What you see | Likely cause | Where it is explained |
 | --- | --- | --- |
-| Every query is slow (40 ms or more) | Hyperdrive was given an IP address, not a host name | [../approach-a.md](../approach-a.md) |
-| "DNS lookup failed" just after you made the record | The new DNS record is not ready yet; wait a few minutes | [../approach-a.md](../approach-a.md) |
-| Port 3306 is closed though the firewall rule exists | The server's own firewall (for example `ufw`) | [../approach-a.md](../approach-a.md) |
-| Install says `installed` but there is no user | A strict `sql_mode` on the server | [../approach-a2.md](../approach-a2.md) |
-| Edits show late or old data appears | The Hyperdrive query cache is on | [../approach-a2.md](../approach-a2.md) |
-| First install or WooCommerce activation fails once on PlanetScale | Schema lag across pooled connections; run it again | [../approach-a-overview.md](../approach-a-overview.md) |
+| Every query is slow (40 ms or more) | Hyperdrive was given an IP address, not a host name | [details](../approach-a.md) |
+| "DNS lookup failed" just after you made the record | The new DNS record is not ready yet; wait a few minutes | [details](../approach-a.md) |
+| Port 3306 is closed though the firewall rule exists | The server's own firewall (for example `ufw`) | [details](../approach-a.md) |
+| Install says `installed` but there is no user | A strict `sql_mode` on the server | [details](../approach-a2.md) |
+| Edits show late or old data appears | The Hyperdrive query cache is on | [details](../approach-a2.md) |
+| First install or WooCommerce activation fails once on PlanetScale | Schema lag across pooled connections; run it again | [details](../approach-a-overview.md) |
 
 ## What this page does not cover
 
