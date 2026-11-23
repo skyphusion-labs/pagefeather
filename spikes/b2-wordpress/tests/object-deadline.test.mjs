@@ -269,6 +269,6 @@ test('index.js applies the deadline inside toPhpObject and returns it before any
 	const probe = fn.indexOf('frameProbe(', back);
 	assert.ok(back > 0 && probe > back, 'the deadline answer returns before the write-loss frame probe');
 	// The Turnstile header is still set on the forwarded request, then the deadline wraps it.
-	assert.match(fn, /const fwd = new Request\(req\);\s*\/\/[^\n]*\n\s*setResultHeader\(fwd\.headers, pre && pre\.value\);/);
+	assert.match(fn, /const fwd = attemptRequest\(req, replay\);\s*\/\/[^\n]*\n\s*setResultHeader\(fwd\.headers, pre && pre\.value\);/);
 	assert.ok(fn.indexOf('const sent = ac ? new Request(fwd, { signal: ac.signal }) : fwd;') > fn.indexOf('setResultHeader(fwd.headers, pre && pre.value);'));
 });
