@@ -21,8 +21,9 @@ test('probeTraceId: a safe id only (8 to 64 of A-Z a-z 0-9 -), else null', async
 test('probeTrace logs one m: probe-trace line with the id, the entrypoint and the path (never the query)', async () => {
 	const m = await import('../probe-trace.mjs');
 	const out = [];
-	m.probeTrace(req({ 'x-pf-probe': 'abcdefgh' }), 'pages', { log: (o) => out.push(o) });
-	assert.deepEqual(out, [{ m: 'probe-trace', id: 'abcdefgh', ep: 'pages', method: 'GET', path: '/shop/' }]);
+	m.probeTrace(req({ 'x-pf-probe': 'abcdefgh' }), 'pages', { log: (o) => out.push(o), iso: 'iso123', now: () => 1795000000000 });
+	// #1277 (the main measurement): the isolate id and the handler start, so a tagged request is tied to its isolate.
+	assert.deepEqual(out, [{ m: 'probe-trace', id: 'abcdefgh', ep: 'pages', method: 'GET', path: '/shop/', iso: 'iso123', at: 1795000000000 }]);
 	// The #1296 hand-off's loopback (x-pf-pages-render: 1, on the #1277 arms) is named at the gateway, with no import of
 	// pages-render.mjs (main does not have it).
 	m.probeTrace(req({ 'x-pf-probe': 'abcdefgh', 'x-pf-pages-render': '1' }), 'gateway', { log: (o) => out.push(o) });
@@ -36,11 +37,11 @@ test('probeTrace logs one m: probe-trace line with the id, the entrypoint and th
 test('index.js logs it at the gateway entry, the Pages entry and the PHP run start', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	const gw = src.slice(src.indexOf('export default {'), src.indexOf('export default {') + 600);
-	assert.match(gw, /async fetch\(req, env, ctx\) \{\n\t\tprobeTrace\(req, 'gateway'\);/, 'the first line of the gateway');
+	assert.match(gw, /async fetch\(req, env, ctx\) \{\n\t\tprobeTrace\(req, 'gateway', \{ iso: ISOLATE_ID \}\);/, 'the first line of the gateway');
 	const pages = src.slice(src.indexOf('export class Pages extends WorkerEntrypoint {'), src.indexOf('export default {'));
-	assert.match(pages, /async fetch\(req\) \{\n\t\tprobeTrace\(req, 'pages'\);/, 'the first line of Pages');
+	assert.match(pages, /async fetch\(req\) \{\n\t\tprobeTrace\(req, 'pages', \{ iso: ISOLATE_ID \}\);/, 'the first line of Pages');
 	const h = src.slice(src.indexOf('async function handleInner(req, env, url, spikeOk, maxBody, ctx) {'), src.indexOf('async function handleInner(req, env, url, spikeOk, maxBody, ctx) {') + 300);
-	assert.match(h, /probeTrace\(req, 'php'\);/, 'a PHP run');
+	assert.match(h, /probeTrace\(req, 'php', \{ iso: ISOLATE_ID \}\);/, 'a PHP run');
 });
 
 // The lead's question on #1366: what does this cost on normal traffic (no x-pf-probe)? It must be NO line and no work past

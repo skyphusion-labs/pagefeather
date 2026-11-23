@@ -16,11 +16,12 @@ export function probeTraceId(req) {
 	return v && ID.test(v) ? v : null;
 }
 
-export function probeTrace(req, ep, { log = (o) => console.log(JSON.stringify(o)) } = {}) {
+export function probeTrace(req, ep, { log = (o) => console.log(JSON.stringify(o)), iso = null, now = Date.now } = {}) {
 	const id = probeTraceId(req);
 	if (!id) return;
 	let path = '';
 	try { path = new URL(req.url).pathname; } catch { /* no url */ }
 	const where = ep === 'gateway' && req.headers.get(LOOPBACK_HEADER) === '1' ? 'gateway-loopback' : ep;
-	log({ m: 'probe-trace', id, ep: where, method: req.method, path });
+	// #1277 (the main measurement): the isolate id and the handler start tie a tagged request to its isolate.
+	log({ m: 'probe-trace', id, ep: where, method: req.method, path, iso, at: now() });
 }
