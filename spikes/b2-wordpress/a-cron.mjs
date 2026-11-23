@@ -1,7 +1,7 @@
 // Approach A: Workers Cron Trigger ticks a named PhpRuntime (#855). Hyperdrive only; off unless
 // A_CRON=on on the Worker. Does not run runCron in the front isolate (#714).
 
-import { pullIn } from './alarm-arm.mjs';
+import { pullIn, shouldArmAlarm, setAlarmRecorded } from './alarm-arm.mjs';
 
 export const CRON_OBJECT_NAME = 'cron';
 export const CRON_TICK_PATH = '/_cron-tick';
@@ -131,14 +131,25 @@ export function cronWakeRoute(env) {
 }
 
 /**
- * Pull the cron alarm in to now, through pullIn (interval 0). Idempotent: an alarm already at or before now, or none,
- * is left as pullIn leaves it. This does not run a cron leg.
+ * Pull the cron alarm in to now, through pullIn (interval 0). Idempotent: an alarm already at or before now is left as
+ * pullIn leaves it. This does not run a cron leg.
+ * #1381: with NO alarm (a fresh site, before the first Workers Cron tick), or a stale one (more than STALE_MS past: its
+ * retries used up, #291), the wake ARMS one at now instead (a stale one is deleted first, as rearm does). Before, it
+ * left none alone, so on a fresh site the deploy's wake was accepted and nothing ran (pfsh1365: no alarm in 600 s).
  */
 export async function wakeCronAlarm(storage, now) {
+	const cur = await storage.getAlarm();
+	if (shouldArmAlarm(cur, now)) {
+		const stale = cur !== null && cur !== undefined;
+		if (stale) await storage.deleteAlarm();
+		await setAlarmRecorded(storage, now, now, stale ? 'cron-wake-stale' : 'cron-wake-arm');
+		return { ok: true, armed: true, stale, pulled: false, at: now, was: stale ? Number(cur) : null };
+	}
 	const r = await pullIn(storage, now, 0, 'cron-wake');
 	const at = await storage.getAlarm();
 	return {
 		ok: true,
+		armed: false,
 		pulled: r.pulled === true,
 		at: at === null || at === undefined ? null : Number(at),
 		was: r.pulled ? Number(r.was) : null,

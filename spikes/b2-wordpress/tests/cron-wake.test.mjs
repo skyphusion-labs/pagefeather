@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { ALARM_SET_KEY } from '../alarm-arm.mjs';
+import { ALARM_SET_KEY, STALE_MS } from '../alarm-arm.mjs';
 import { IDLE_MAX_MS } from '../cron-idle.mjs';
 import { cronObjectWake, cronWakeRoute, wakeCronAlarm, CRON_WAKE_PATH } from '../a-cron.mjs';
 
@@ -22,6 +22,7 @@ function fakeStorage(initial) {
 		m,
 		getAlarm: async () => alarm,
 		setAlarm: async (t) => { calls.push(['setAlarm', t]); alarm = t; },
+		deleteAlarm: async () => { calls.push(['deleteAlarm']); alarm = null; },
 		put: async (k, v) => { calls.push(['put', k]); m.set(k, v); },
 		get: async (k) => m.get(k),
 	};
@@ -69,18 +70,57 @@ test('#1360 a parked alarm is pulled in to now, through pullIn, and a second wak
 	assert.equal(s.calls.filter((c) => c[0] === 'setAlarm').length, 1, 'idempotent: already at now');
 });
 
-test('#1360 an alarm already due, or none, is left alone', async () => {
+test('#1360 an alarm already due (within STALE_MS) is left alone', async () => {
 	const due = fakeStorage(now - 1000);
 	const d = await wakeCronAlarm(due, now);
 	assert.equal(d.pulled, false);
+	assert.equal(d.armed, false);
 	assert.equal(await due.getAlarm(), now - 1000);
 	assert.deepEqual(due.calls, []);
+});
+
+// #1381: on a FRESH site the cron object has no alarm yet. The first one used to come only from the Workers Cron tick
+// (snapshotRearm), and on pfsh1365 none ran in 600 s after the deploy, so the wake was accepted and did nothing. The
+// wake now ARMS an alarm at now when there is none, or a stale one (shouldArmAlarm: more than STALE_MS in the past,
+// deleted first, as rearm does for #291). It still does not run a leg: the alarm runs it.
+test('#1381 no alarm (a fresh site): the wake arms one at now, recorded by cron-wake-arm', async () => {
 	const none = fakeStorage(null);
 	const n = await wakeCronAlarm(none, now);
 	assert.equal(n.ok, true);
+	assert.equal(n.armed, true);
+	assert.equal(n.stale, false);
 	assert.equal(n.pulled, false);
-	assert.equal(n.at, null);
-	assert.deepEqual(none.calls, []);
+	assert.equal(n.at, now);
+	assert.equal(await none.getAlarm(), now);
+	assert.equal(none.m.get(ALARM_SET_KEY).by, 'cron-wake-arm');
+	assert.deepEqual(none.calls.filter((c) => c[0] !== 'put'), [['setAlarm', now]], 'no delete when there was none');
+	const again = await wakeCronAlarm(none, now);
+	assert.equal(again.armed, false, 'a second wake finds it due and leaves it');
+	assert.equal(none.calls.filter((c) => c[0] === 'setAlarm').length, 1);
+});
+test('#1381 a stale alarm (past its retries, #291) is deleted and armed at now', async () => {
+	const stale = fakeStorage(now - STALE_MS - 1);
+	const r = await wakeCronAlarm(stale, now);
+	assert.equal(r.armed, true);
+	assert.equal(r.stale, true);
+	assert.equal(r.was, now - STALE_MS - 1);
+	assert.equal(r.at, now);
+	assert.deepEqual(stale.calls.filter((c) => c[0] !== 'put'), [['deleteAlarm'], ['setAlarm', now]]);
+	assert.equal(stale.m.get(ALARM_SET_KEY).by, 'cron-wake-stale');
+});
+test('#1381 through the object route: a fresh site answers armed, and cron off still arms nothing', async () => {
+	const s = fakeStorage(null);
+	const r = await wake(s);
+	assert.equal(r.status, 200);
+	assert.equal(r.body.armed, true);
+	assert.equal(r.body.at, now);
+	const off = fakeStorage(null);
+	const o = await wake(off, { env: { A_CRON: 'off', PHP_RUNTIME: on.PHP_RUNTIME } });
+	assert.deepEqual(o.body, { ok: false, cron: 'off' });
+	assert.deepEqual(off.calls, []);
+	const no = fakeStorage(null);
+	assert.equal((await wake(no, { spikeOk: false })).status, 403);
+	assert.deepEqual(no.calls, [], 'no token: nothing armed');
 });
 
 test('#1360 A_CRON off answers and does nothing', async () => {
@@ -96,7 +136,7 @@ test('#1360 A_CRON off answers and does nothing', async () => {
 	assert.equal(cronWakeRoute(on), 'wake');
 });
 
-test('#1360 the wake function only pulls the alarm in; it does not run a cron leg', () => {
+test('#1360 #1381 the wake function arms or pulls the alarm; it does not run a cron leg', () => {
 	const src = readFileSync(new URL('../a-cron.mjs', import.meta.url), 'utf8');
 	const start = src.indexOf('export async function wakeCronAlarm');
 	const end = src.indexOf('\nexport ', start + 10);
@@ -121,4 +161,5 @@ test('#1360 the gateway route is after the spike gate, cron off does not fetch, 
 	assert.match(objBlock, /cronObjectWake\(/);
 	assert.doesNotMatch(objBlock, /runCron|this\.alarm\(|cronIdle\(|snapshotRearm|runMediaSweep|armBeforeRun/);
 	assert.ok(obj < src.indexOf('objectUrl.pathname === CRON_TICK_PATH'), 'the wake is not the cron tick');
+	assert.match(objBlock, /if \(woke\.body && woke\.body\.armed\) console\.log\(JSON\.stringify\(\{ m: 'alarm', armedBy: 'cron-wake', stale: woke\.body\.stale, was: woke\.body\.was \}\)\);/, '#1381: an armed wake says so (the live proof reads it)');
 });
