@@ -58,7 +58,10 @@ test('no x-pf-probe (normal traffic): no line, and nothing past ONE header read 
 	};
 	for (const [label, val] of [['no header', null], ['an invalid id', 'bad id!']]) {
 		const { req, reads, urlReads } = mk(val);
-		m.probeTrace(req, 'gateway', { log: (o) => out.push(o) });
+		const nowCalls = { n: 0 };
+		m.probeTrace(req, 'gateway', { log: (o) => out.push(o), iso: 'iso1', now: () => { nowCalls.n++; return 1; } });
+		// #1277: the new at field must not add work either: no clock read for an untagged request.
+		assert.equal(nowCalls.n, 0, label + ': no clock read');
 		assert.deepEqual(reads, ['x-pf-probe'], label + ': exactly one header read');
 		assert.equal(urlReads.n, 0, label + ': the URL is never read');
 	}
