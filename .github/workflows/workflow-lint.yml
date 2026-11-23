@@ -1,0 +1,40 @@
+# Workflow lint (#1396). A workflow file that does not parse runs NO jobs and nothing names the cause (#1395 at 91f595fb:
+# an unquoted "m: " in a ci.yml step name gave a ci.yml run with 0 jobs). This lives OUTSIDE ci.yml, so it still runs, and
+# names the file and line, when ci.yml itself is the broken file.
+name: workflow-lint
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - "tests/ci/workflow-lint.sh"
+      - "tests/ci/workflow-lint-test.sh"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - "tests/ci/workflow-lint.sh"
+      - "tests/ci/workflow-lint-test.sh"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  workflow-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+      # sha256 of actionlint_1.7.12_linux_amd64.tar.gz, from that release's own checksums file (read 2026-11-23).
+      ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install actionlint (pinned, checksum verified)
+        run: |
+          f="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$f" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$f"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/$f" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/al" && tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP/al" actionlint
+          echo "ACTIONLINT=$RUNNER_TEMP/al/actionlint" >> "$GITHUB_ENV"
+      - name: "workflow-lint's own tests: a planted bad file fails by name; no actionlint is could-not-measure"
+        run: bash tests/ci/workflow-lint-test.sh
+      - name: Lint every workflow file
+        run: bash tests/ci/workflow-lint.sh .github/workflows
