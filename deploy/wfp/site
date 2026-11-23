@@ -27,6 +27,8 @@ need_account
 cmd=${1:-}; s=${2:-}
 if [ "$cmd" = list ]; then list_sites; exit 0; fi
 case "$cmd" in add|remove|update|import|restore|schedule) ;; *) echo "usage: site add|remove|update|import|restore|schedule <name> | site update --all | site list" >&2; exit 2 ;; esac
+# #1385: site update needs Python 3.11+ (tomllib in the rollback); refused before anything else.
+if [ "$cmd" = update ]; then python_floor_check || exit 2; fi
 # #639, #693: OBSERVABILITY=full on a live site (deploy/live-sites/<name>.env or
 # deploy/wfp/live-sites/<name>) is refused before shared init, the build, or any
 # upload. 1 and unset are unchanged. update --all checks each site in update_one.
