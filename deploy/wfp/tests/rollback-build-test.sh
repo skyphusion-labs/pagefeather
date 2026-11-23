@@ -231,7 +231,7 @@ check "  the new build's upload carried the new setting" "$(grep -c '^OBJECT_CAL
 check "  the ROLLBACK upload does not carry it" "$(grep -c '^OBJECT_CALL_DEADLINE_S' "$WRLOG.cfg.2")" 0
 check "  the rollback keeps the recorded setting" "$(grep -c '^MAIL_FROM = "wp@example.com"$' "$WRLOG.cfg.2")" 1
 check "  the log names the setting it restored" "$(grep -c 'rollback: OBJECT_CALL_DEADLINE_S restored to the recorded value (not set)' "$T/out")" 1
-check "  no secret value is in the rollback config (the spike token, the salt)" "$(grep -c 'SECRET-SPIKE-TOKEN\|"s"$' "$WRLOG.cfg.2")" 0
+check "  no secret value is in the rollback config (the spike token, the salt)" "$(grep -cE 'SECRET-SPIKE-TOKEN|= "s"$' "$WRLOG.cfg.2")" 0
 run_update "$LIVE_B" FORCE_FAIL=verify BKT=c1385b REC_SETTINGS="$REC" MAIL_FROM=new@example.com
 check "#1385: a changed setting: the rollback upload has the recorded value" "$(grep -c '^MAIL_FROM = "wp@example.com"$' "$WRLOG.cfg.2"):$(grep -c 'new@example.com' "$WRLOG.cfg.2")" "1:0"
 run_update "$LIVE_B" FORCE_FAIL=verify BKT=c1385c REC_SETTINGS="$REC" THROWAWAY=1 FAULT_INJECT=after-insert
@@ -240,6 +240,16 @@ check "  the rollback upload exists and does not carry it (never recorded, so ne
 # A setting the rollback cannot put back (the record has it, this run's config does not render it): it says so, loudly.
 run_update "$LIVE_B" FORCE_FAIL=verify BKT=c1385d REC_SETTINGS='{"v": 1, "settings": {"MAIL_FROM": "wp@example.com", "PHP_INI": "memory_limit=96M"}, "secrets": []}' PHP_INI=memory_limit=64M
 check "#1385: a setting the rollback cannot restore: the update fails, and the log names it" "$(grep -c '^rc=1$' "$T/out"):$(grep -c 'ROLLBACK LEFT A SETTING LIVE: PHP_INI' "$T/out")" "1:1"
+# rollback-conf on its own: the build-shape keys follow the build, never the record (the saved build needs its own
+# remote packs); HTTP_ALLOW_HOSTS goes back to the recorded list, or to the default list when the record has none.
+printf '[vars]\nOPCACHE_REMOTE = "1"\nSITE_REMOTE = "1"\nHTTP_ALLOW_HOSTS = "a.example,cldup.com"\n' > "$T/rc.toml"
+printf '{"v": 1, "settings": {}, "secrets": []}' > "$T/rc.json"
+( export OPCACHE_REMOTE=1 SITE_REMOTE=1 HTTP_ALLOW_HOSTS=a.example,cldup.com; python3 -I "$WFP/site_settings.py" rollback-conf "$T/rc.toml" "$T/rc.json" "$T/rc.out" ) 2> "$T/rc.err"
+check "#1385 rollback-conf: the remote packs are kept (they follow the build)" "$(grep -cE '^(OPCACHE_REMOTE|SITE_REMOTE) = "1"$' "$T/rc.out")" 2
+check "  HTTP_ALLOW_HOSTS with no record goes back to the default list" "$(grep -c "^HTTP_ALLOW_HOSTS = \"$(sed -n "s/^export const DEFAULT_HTTP_ALLOW_HOSTS = '\(.*\)';/\1/p" "$WFP/../../spikes/b2-wordpress/http-allow.mjs")\"$" "$T/rc.out")" 1
+printf '{"v": 1, "settings": {"HTTP_ALLOW_HOSTS": {"set": true, "value": "b.example"}}, "secrets": []}' > "$T/rc.json"
+( export HTTP_ALLOW_HOSTS=a.example,cldup.com; python3 -I "$WFP/site_settings.py" rollback-conf "$T/rc.toml" "$T/rc.json" "$T/rc.out" ) 2> "$T/rc.err"
+check "  HTTP_ALLOW_HOSTS goes back to the recorded list" "$(grep -c '^HTTP_ALLOW_HOSTS = "b.example"$' "$T/rc.out")" 1
 # No record at all (a site from before #558): the rollback says it keeps this run's settings.
 run_update "$LIVE_B" FORCE_FAIL=verify BKT=c1385e OBJECT_CALL_DEADLINE_S=1
 check "#1385: no recorded settings: the log says the rollback could not restore them, and names this run's" "$(grep -c 'ROLLBACK LEFT A SETTING LIVE: OBJECT_CALL_DEADLINE_S' "$T/out")" 1

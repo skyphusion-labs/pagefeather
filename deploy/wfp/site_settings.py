@@ -233,6 +233,96 @@ def rendered_vars(conf_text):
     return out
 
 
+
+def default_http_allow_hosts():
+    """The default allow list, from the one place that defines it (spikes/b2-wordpress/http-allow.mjs)."""
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "spikes", "b2-wordpress", "http-allow.mjs")
+    m = re.search(r"DEFAULT_HTTP_ALLOW_HOSTS = '([^']*)'", open(src).read())
+    return m.group(1) if m else None
+
+
+# #1385: the settings that describe how the bundle was BUILT (the remote packs, #394; the opcache split). A rollback
+# re-deploys the saved build, which was built with its own values, and remote_assets_check fits this config to it:
+# these follow the build, never the record. The run also defaults the remote packs on, so they can differ from an
+# older record without any operator change.
+BUILD_SHAPE = ("OPCACHE_SPLIT", "OPCACHE_REMOTE", "SITE_REMOTE")
+
+
+def rollback_conf(conf_in, record_path, conf_out, env=os.environ):
+    """#1385: the config a rollback re-deploys. The update rendered conf_in from THIS run's settings; a
+    rollback must put back the recorded ones, or a setting that broke the update stays live while the
+    record goes back (and the next update sees nothing to do). Only the keys this run changed are
+    touched (a setting it changed, or a measurement flag it set, which is never recorded). Each goes
+    back to its recorded value in [vars], or its line is removed when the record has none. A key that
+    has no [vars] line of its own cannot be put back here: it is named, and the exit is 4. With no
+    record at all, the config is kept and every setting this run holds is named. Values are never printed."""
+    import tomllib
+    text = open(conf_in).read()
+    rec = None
+    if record_path and os.path.exists(record_path):
+        rec = json.load(open(record_path))
+    left = []
+    if rec is None:
+        left = sorted(k for k in SETTINGS + MEASUREMENT if k not in PRESENCE and k not in BUILD_SHAPE and env.get(k))
+        open(conf_out, "w").write(text)
+        if left:
+            print("site settings: ROLLBACK LEFT A SETTING LIVE: %s (no recorded settings, so the rollback re-deploys this run's; set them back by hand)" % " ".join(left), file=sys.stderr)
+            return 4
+        return 0
+    settings = rec.get("settings") or {}
+    try:
+        vars_ = tomllib.loads(text).get("vars") or {}
+    except tomllib.TOMLDecodeError:
+        print("site settings: the rendered config does not parse; the rollback cannot put the settings back", file=sys.stderr)
+        open(conf_out, "w").write(text)
+        return 4
+    def want(k):
+        if k in MEASUREMENT:
+            return None
+        if k in PRESENCE:
+            parsed = recorded_presence(settings[k]) if k in settings else None
+            return parsed[1] if parsed and parsed[0] else default_http_allow_hosts()
+        v = settings.get(k)
+        return None if v in (None, "") else str(v)
+    def ran(k):
+        if k in PRESENCE:
+            v = vars_.get(k)
+            return None if v is None else str(v)
+        v = env.get(k)
+        return None if v in (None, "") else str(v)
+    lines = text.split("\n")
+    def var_line(k):
+        on = False
+        for i, line in enumerate(lines):
+            st = line.strip()
+            if st.startswith("["):
+                on = st == "[vars]"
+                continue
+            if on and re.match(r"^%s\s*=" % re.escape(k), st):
+                return i
+        return None
+    for k in SETTINGS + MEASUREMENT:
+        if k in BUILD_SHAPE or (k in PRESENCE and k not in vars_):
+            continue  # follows the build; or a presence key this config does not render at all
+        w, r = want(k), ran(k)
+        if w == r:
+            continue
+        i = var_line(k)
+        if i is None:
+            left.append(k)
+            continue
+        if w is None:
+            lines.pop(i)
+            print("  rollback: %s restored to the recorded value (not set)" % k, file=sys.stderr)
+        else:
+            lines[i] = "%s = %s" % (k, json.dumps(w))
+            print("  rollback: %s restored to the recorded value" % k, file=sys.stderr)
+    open(conf_out, "w").write("\n".join(lines))
+    if left:
+        print("site settings: ROLLBACK LEFT A SETTING LIVE: %s (no [vars] line of its own to put back; set it back by hand)" % " ".join(sorted(left)), file=sys.stderr)
+        return 4
+    return 0
+
 def dropcheck(conf_path, bindings_path, secrets_path, env=os.environ):
     drop = drop_list(env)
     try:
@@ -289,6 +379,8 @@ def main(argv):
         return merge(json.load(open(argv[2])))
     if cmd == "dropcheck":
         return dropcheck(argv[2], argv[3], argv[4])
+    if cmd == "rollback-conf":
+        return rollback_conf(argv[2], argv[3], argv[4])
     print(__doc__, file=sys.stderr)
     return 2
 
