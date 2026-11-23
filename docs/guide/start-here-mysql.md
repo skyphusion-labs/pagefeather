@@ -117,6 +117,7 @@ Each line has its measured figure and a link to the evidence.
 - **Checkout is slow:** the order step took 4.8 to 6.8 s in our tests ([checkout](limits.md#woocommerce-checkout-is-slow-on-the-mysql-option-1218-1210)).
 - **WooCommerce admin and bulk product edits are slow:** a product save takes about 2 to 3 s, and a batch of 5 new products took 6.5 s ([admin](limits.md#woocommerce-admin-screens-and-bulk-product-edits-are-slow-on-the-mysql-option-1078)).
 - **A page that is not in the cache yet can be slow:** 9 to 12 s under load in our tests ([the cache MISS](limits.md#on-the-mysql-option-a-guest-product-page-that-was-not-cached-yet-was-slow-1277-open-until-measured-end-to-end)). A cached page runs no PHP.
+- **A new site's first deploy waits 10 minutes** for its background jobs (WP-Cron and WooCommerce's scheduled actions) to start, and they may not start in that time. The site itself works. This is a known problem, tracked in [#1381](https://github.com/skyphusion-labs/pagefeather/issues/1381).
 - **A database query stops after 30 s** ([the query limit](limits.md#a-database-query-is-cut-off-after-30-s-on-the-mysql-option-1359)).
 - **You cannot install plugins from wp-admin,** and **email is off until you set it up**, as on the built-in database option ([Start here, limits](start-here.md#3-what-are-my-limits)).
 
