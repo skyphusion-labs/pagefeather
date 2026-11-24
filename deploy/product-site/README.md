@@ -18,6 +18,9 @@ CLOUDFLARE_API_TOKEN=... \
 
 The ruleset file is `redirect-com-ruleset.json`. Re-run is safe.
 
+DNS must be proxied originless (`A 192.0.2.1`, `AAAA 100::`). A grey-cloud
+record is not success: the script patches it. Multiple wrong records refuse.
+
 ### Verify
 
 ```sh

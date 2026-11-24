@@ -37,20 +37,43 @@ cf_ok() {
   esac
 }
 
-# Ensure one proxied originless record exists for name+type. Skip when present.
+# Ensure one proxied originless record exists for name+type.
+# Grey-cloud or wrong content is not success: Single Redirect only runs on proxied hosts.
 ensure_originless() {
   local name=$1 type=$2 content=$3
-  local list count
+  local list decision id
   list=$(cf_ok "list $type $name" GET "/zones/$ZONE_ID/dns_records?type=$type&name=$name&per_page=5")
-  count=$(printf '%s' "$list" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("result") or []))')
-  if [ "$count" != 0 ]; then
-    echo "  $type $name already present"
-    return 0
-  fi
-  cf_ok "create $type $name" POST "/zones/$ZONE_ID/dns_records" \
-    --data "$(printf '{"type":"%s","name":"%s","content":"%s","proxied":true,"ttl":1}' "$type" "$name" "$content")" \
-    >/dev/null
-  echo "  created $type $name -> $content (proxied)"
+  decision=$(printf '%s' "$list" | WANT_CONTENT="$content" python3 "$SCRIPT_DIR/originless-decide.py")
+  case "$decision" in
+    ok)
+      echo "  $type $name already proxied originless ($content)"
+      return 0
+      ;;
+    create)
+      cf_ok "create $type $name" POST "/zones/$ZONE_ID/dns_records" \
+        --data "$(printf '{"type":"%s","name":"%s","content":"%s","proxied":true,"ttl":1}' "$type" "$name" "$content")" \
+        >/dev/null
+      echo "  created $type $name -> $content (proxied)"
+      return 0
+      ;;
+    patch\ *)
+      id=${decision#patch }
+      cf_ok "patch $type $name" PUT "/zones/$ZONE_ID/dns_records/$id" \
+        --data "$(printf '{"type":"%s","name":"%s","content":"%s","proxied":true,"ttl":1}' "$type" "$name" "$content")" \
+        >/dev/null
+      echo "  updated $type $name -> $content (proxied) id=$id"
+      return 0
+      ;;
+    fail\ *)
+      echo "  $type $name: multiple DNS records, none proxied originless ($content); refuse" >&2
+      echo "  ids: ${decision#fail }" >&2
+      exit 1
+      ;;
+    *)
+      echo "  $type $name: unexpected decide '$decision'" >&2
+      exit 1
+      ;;
+  esac
 }
 
 echo "== 1. Originless DNS for HTTP on $ZONE_NAME and $WWW_NAME (zone $ZONE_ID)"
