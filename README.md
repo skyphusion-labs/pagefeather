@@ -1,5 +1,9 @@
 # Pagefeather
 
+<p align="center">
+  <img src="site/assets/logo.svg" alt="Pagefeather" width="96" height="96">
+</p>
+
 **WordPress and WooCommerce on Cloudflare, in your own Cloudflare account.**
 
 This is for you if you build WordPress sites, for yourself or for clients, and you are tired of looking after a WordPress server.

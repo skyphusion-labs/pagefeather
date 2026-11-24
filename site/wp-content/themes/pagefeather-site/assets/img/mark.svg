@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" fill="none" role="img" aria-label="Pagefeather">
+  <defs>
+    <linearGradient id="pf-g" x1="8" y1="88" x2="88" y2="8" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0d9488"/>
+      <stop offset="0.5" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#fbbf24"/>
+    </linearGradient>
+  </defs>
+  <rect width="96" height="96" rx="22" fill="#0c1220"/>
+  <rect x="2" y="2" width="92" height="92" rx="20" stroke="url(#pf-g)" stroke-opacity="0.65" stroke-width="2"/>
+  <!-- feather body -->
+  <path d="M28 68c8-6 18-20 26-36 2-4 8-14 14-20-2 12-6 26-14 40-6 10-14 18-22 22 0-2-2-4-4-6z" fill="url(#pf-g)"/>
+  <!-- rachis -->
+  <path d="M66 16c-8 10-18 28-28 46" stroke="#070b14" stroke-opacity="0.45" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- barbs -->
+  <path d="M52 28c6 2 12 2 18-2M46 40c7 3 14 3 20-1M40 52c7 3 13 2 18-2" stroke="#e8edf5" stroke-opacity="0.35" stroke-width="1.75" stroke-linecap="round"/>
+  <!-- page corner accent -->
+  <path d="M22 24h16l8 8v8" stroke="url(#pf-g)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.85"/>
+  <path d="M22 36h12M22 44h8" stroke="#7b8da8" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+</svg>
