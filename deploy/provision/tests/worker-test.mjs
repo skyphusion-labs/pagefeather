@@ -14,11 +14,12 @@ const SECRET = 'super-secret-operator-token';
 const IMG = `registry.cloudflare.com/ACCT/wp-woo-c1@sha256:${'a'.repeat(64)}`;
 
 // A trusted bundle in the Worker's own R2 bucket. wp ships a JS module and a
-// binary .wasm; c1 ships a JS module. The caller can never name or write this.
+// binary .wasm; approach A ships index-a-lean.js. The caller can never name or write this.
 function bundleStub() {
   const files = {
     'bundles/b-dosql/current/index.js': { text: 'export default { fetch(){} }' },
     'bundles/b-dosql/current/php.wasm': { bin: new Uint8Array([0, 97, 115, 109]) },
+    'bundles/a/current/index-a-lean.js': { text: 'export default { fetch(){} }' },
     'bundles/c1/current/worker.js': { text: 'export default { fetch(){} }' },
   };
   return {
@@ -44,6 +45,8 @@ function makeEnv(overrides = {}) {
   };
 }
 
+const HD_OK = 'd'.repeat(32);
+
 // Install a fresh global-fetch recorder for one call. The idempotency read (GET
 // on a KV value) is 404 unless opts.existing is set.
 function withFetch(opts = {}) {
@@ -51,6 +54,14 @@ function withFetch(opts = {}) {
   const impl = async (url, init) => {
     calls.push({ url, method: init.method, body: init.body });
     if (init.method === 'POST' && String(url).endsWith('/_install')) return { ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":1}', ms: 5 }) };
+    if (init.method === 'GET' && /\/hyperdrive\/configs\//.test(url)) {
+      if (opts.hyperdriveForbidden) return { ok: false, status: 403, text: async () => '{"success":false,"errors":[]}' };
+      if (opts.hyperdriveUpstream) return { ok: false, status: opts.hyperdriveUpstream, text: async () => '{"success":false,"errors":[{"code":10000}]}' };
+      if (opts.hyperdriveCaching) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, result: { id: HD_OK, origin: { scheme: 'mysql', host: 'h', database: 'd' }, caching: { disabled: false } } }) };
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, result: { id: HD_OK, name: 'hd', origin: { scheme: 'mysql', host: 'h', database: 'd' }, caching: { disabled: true } } }) };
+    }
     if (init.method === 'GET' && /\/storage\/kv\/namespaces\/[^/]+\/values\//.test(url)) {
       if (opts.existing) return { ok: true, status: 200, text: async () => JSON.stringify(opts.existing) };
       return { ok: false, status: 404, text: async () => '{"success":false,"errors":[{"code":10009}]}' };
@@ -217,6 +228,55 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
   ok('idempotent: an existing site returns 200 existing:true', r.res.status === 200 && r.json.existing === true && r.json.script === 'site-blog');
   const mutating = r.calls.filter((c) => !(c.method === 'GET'));
   ok('idempotent: only the read happened, no create/deploy/overwrite', mutating.length === 0);
+}
+
+// --- Path A kind a (CLI parity; #431 Worker slice) ---
+{
+  const free = await run(makeEnv(), req({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev', plan: 'free', database: HD_OK, placement: 'azure:westus2' }));
+  ok('kind a + plan free is 400 BLOCKED (measured Free Fail)', free.res.status === 400 && /BLOCKED/.test(free.json.error) && /2026-11-05/.test(free.json.error) && free.calls.length === 0);
+
+  const freeSurf = await run(makeEnv(), req({ kind: 'wp', name: 'blog', domain: 'skyphusionwp.dev', surface: 'free-single' }));
+  ok('surface free-single is 400 BLOCKED (deploy.sh, not this Worker)', freeSurf.res.status === 400 && /BLOCKED/.test(freeSurf.json.error) && /deploy\/deploy\.sh/.test(freeSurf.json.error) && freeSurf.calls.length === 0);
+
+  const noDb = await run(makeEnv(), req({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev', placement: 'azure:westus2' }));
+  ok('kind a without database is 400 before Hyperdrive read', noDb.res.status === 400 && /Hyperdrive|database/.test(noDb.json.error));
+
+  const noPlace = await run(makeEnv(), req({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev', database: HD_OK }));
+  ok('kind a without placement is 400', noPlace.res.status === 400 && /placement/.test(noPlace.json.error));
+
+  const cacheOn = await run(makeEnv(), req({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev', database: HD_OK, placement: 'azure:westus2' }), { hyperdriveCaching: true });
+  ok('kind a with caching Hyperdrive is 400', cacheOn.res.status === 400 && /cach/.test(cacheOn.json.error));
+
+  const up5 = await run(makeEnv(), req({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev', database: HD_OK, placement: 'azure:westus2' }), { hyperdriveUpstream: 502 });
+  ok('kind a: Hyperdrive Cloudflare 5xx is 502 not 400 (retryable upstream)', up5.res.status === 502 && up5.res.status !== 400 && /HTTP 502|retry/.test(up5.json.error));
+  const up429 = await run(makeEnv(), req({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev', database: HD_OK, placement: 'azure:westus2' }), { hyperdriveUpstream: 429 });
+  ok('kind a: Hyperdrive Cloudflare 429 is 503 not 400', up429.res.status === 503 && up429.res.status !== 400 && /HTTP 429/.test(up429.json.error));
+
+  const r = await run(makeEnv(), req({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev', database: HD_OK, placement: 'azure:westus2', store: true }));
+  ok('kind a: 200 with site-mystore and a hostname', r.res.status === 200 && r.json.ok === true && r.json.script === 'site-mystore' && r.json.hostname === 'mystore.skyphusionwp.dev' && r.json.provisioned === 'a');
+  ok('kind a: Hyperdrive config was read before deploy', r.calls.some((c) => c.method === 'GET' && /\/hyperdrive\/configs\//.test(c.url)));
+  const aDeploy = r.calls.find((c) => c.method === 'PUT' && /\/dispatch\/namespaces\/wp-wfp\/scripts\/site-mystore$/.test(c.url));
+  ok('kind a: deploys the a bundle main, not php.wasm', aDeploy && aDeploy.body.get('index-a-lean.js') !== null && aDeploy.body.get('php.wasm') === null);
+  const aMeta = await metaOf(aDeploy);
+  const aBind = (n) => aMeta.bindings.find((b) => b.name === n);
+  ok('kind a: HYPERDRIVE binding is the operator database id', aBind('HYPERDRIVE') && aBind('HYPERDRIVE').type === 'hyperdrive' && aBind('HYPERDRIVE').id === HD_OK);
+  ok('kind a: no PHP_RUNTIME Durable Object', !aMeta.bindings.some((b) => b.type === 'durable_object_namespace'));
+  ok('kind a: placement targeted region on the upload', aMeta.placement && aMeta.placement.mode === 'targeted' && aMeta.placement.region === 'azure:westus2');
+  ok('kind a: injected modules still ignored (a bundle only)', aDeploy.body.get('evil.js') === null);
+  ok('kind a: NO account-token mint (same restricted token as wp)',
+    !r.calls.some((c) => c.method === 'POST' && c.url.endsWith('/tokens')));
+  ok('kind a: NO plain /workers/scripts write',
+    !r.calls.some((c) => /\/workers\/scripts\/site-mystore$/.test(c.url)));
+
+  const inj = await run(makeEnv(), req({
+    kind: 'a', name: 'ainject', domain: 'skyphusionwp.dev', database: HD_OK, placement: 'none',
+    modules: [{ name: 'evil.js', content: 'pwn', type: 'application/javascript+module' }],
+    hyperdriveId: 'e'.repeat(32),
+  }));
+  // database wins over a second hyperdriveId field when both present; parse uses database first.
+  ok('kind a injection: still provisions from server bundle', inj.res.status === 200 && inj.json.ok === true);
+  const injDeploy = inj.calls.find((c) => c.method === 'PUT' && /site-ainject$/.test(c.url));
+  ok('kind a injection: evil.js not uploaded', injDeploy && injDeploy.body.get('evil.js') === null);
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);

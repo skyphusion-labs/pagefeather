@@ -4,7 +4,8 @@
 // passes.
 import { createHash } from 'node:crypto';
 import {
-  authorize, validateRequest, resolveBase, selectToken, deriveTarget, buildServerCfg, BadRequest,
+  authorize, validateRequest, resolveBase, selectToken, deriveTarget, buildServerCfg, BadRequest, UpstreamError,
+  refuseImpossibleOperatorPlan, parseOperatorApproachA, assertApproachAHyperdrive, tablePrefixForName,
 } from '../server-config.mjs';
 
 let pass = 0, fail = 0;
@@ -43,9 +44,10 @@ ok('resolveBase: an owned base resolves to its zone', resolveBase({ WFP_BASES: B
 ok('resolveBase: an unowned base is BadRequest', await throwsWith(() => resolveBase({ WFP_BASES: BASES }, 'evil.com'), /not an owned base/));
 ok('resolveBase: a prototype key (__proto__) is not a base (Object.hasOwn)', await throwsWith(() => resolveBase({ WFP_BASES: BASES }, '__proto__'), /not an owned base/));
 
-// selectToken: the split. wp never gets the elevated token.
+// selectToken: wp and a share the restricted token; shop is gone.
 ok('selectToken: wp -> the restricted token', selectToken({ WP_PROVISION_TOKEN: 'WP', SHOP_PROVISION_TOKEN: 'SHOP' }, 'wp') === 'WP');
-ok('selectToken: shop THROWS (c1 retired #214, one restricted token only)', await throwsWith(() => selectToken({ WP_PROVISION_TOKEN: 'WP' }, 'shop'), /only .wp. is supported|unknown kind/));
+ok('selectToken: a -> the same restricted token (CLI / Worker parity)', selectToken({ WP_PROVISION_TOKEN: 'WP' }, 'a') === 'WP');
+ok('selectToken: shop THROWS (c1 retired #214, one restricted token only)', await throwsWith(() => selectToken({ WP_PROVISION_TOKEN: 'WP' }, 'shop'), /only .wp. and .a.|unknown kind/));
 ok('selectToken: a missing token throws', await throwsWith(() => selectToken({}, 'wp'), /WP_PROVISION_TOKEN/));
 ok('selectToken: an unknown kind THROWS, never falls through to the elevated token', await throwsWith(() => selectToken({ WP_PROVISION_TOKEN: 'WP', SHOP_PROVISION_TOKEN: 'SHOP' }, 'evil'), /unknown kind/));
 
@@ -60,12 +62,59 @@ ok('selectToken: an unknown kind THROWS, never falls through to the elevated tok
     shop.script === 'c1-store' && shop.hostname === 'c1-store.skyphusionwp.workers.dev');
 }
 
-// Kind 'a' (#431): only a caller that allows it; the default gate stays 'wp' only.
+// Kind 'a' (#431): default kinds stay wp-only; Path A passes kinds ['wp','a'].
 {
-  ok('validateRequest: the DEFAULT gate still refuses kind a (the operator Worker is unchanged)', await throwsWith(() => validateRequest({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev' }), /kind must be "wp"/));
+  ok('validateRequest: the DEFAULT kinds still refuse kind a (Path A passes kinds explicitly)', await throwsWith(() => validateRequest({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev' }), /kind must be "wp"/));
   const a = validateRequest({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev', hyperdriveId: 'f'.repeat(32) }, { kinds: ['wp', 'a'] });
   ok('validateRequest: a caller that allows a gets it, and a hyperdriveId in the body is DROPPED', a.kind === 'a' && JSON.stringify(Object.keys(a).sort()) === '["domain","kind","name"]');
   ok('validateRequest: with kinds wp+a an unknown kind still fails', await throwsWith(() => validateRequest({ kind: 'x', name: 'mystore', domain: 'skyphusionwp.dev' }, { kinds: ['wp', 'a'] }), /kind must be one of "wp", "a"/));
+}
+
+// Operator Path A plan gates and approach A parse (#431 Worker slice).
+{
+  ok('tablePrefixForName: hyphens become underscores', tablePrefixForName('my-store') === 'wp_my_store_');
+  ok('refuseImpossible: kind a + plan free is BLOCKED with the Free Fail cite', await throwsWith(() => refuseImpossibleOperatorPlan({ plan: 'free' }, 'a'), /BLOCKED.*Free.*2026-11-05|#431/));
+  ok('refuseImpossible: surface free-single is BLOCKED for any kind', await throwsWith(() => refuseImpossibleOperatorPlan({ surface: 'free-single' }, 'wp'), /BLOCKED.*deploy\/deploy\.sh|#294|#328/));
+  ok('refuseImpossible: paid plan with kind a is quiet', (() => { refuseImpossibleOperatorPlan({ plan: 'paid' }, 'a'); return true; })());
+
+  const HD = 'a'.repeat(32);
+  const opts = parseOperatorApproachA({ database: HD.toUpperCase(), placement: 'azure:westus2', store: true }, 'my-store');
+  ok('parseOperatorApproachA: lowercases the id, sets prefix and placement and store',
+    opts.hyperdriveId === HD && opts.tablePrefix === 'wp_my_store_'
+    && JSON.stringify(opts.placement) === JSON.stringify({ mode: 'targeted', region: 'azure:westus2' }) && opts.store === true);
+  ok('parseOperatorApproachA: placement none is null (CLI --placement none)', parseOperatorApproachA({ database: HD, placement: 'none' }, 'x').placement === null);
+  ok('parseOperatorApproachA: missing database is 400', await throwsWith(() => parseOperatorApproachA({ placement: 'none' }, 'x'), /Hyperdrive config id|database/));
+  ok('parseOperatorApproachA: missing placement is 400', await throwsWith(() => parseOperatorApproachA({ database: HD }, 'x'), /placement/));
+}
+
+{
+  const HD = 'c'.repeat(32);
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, method: init.method });
+    if (/\/hyperdrive\/configs\//.test(url)) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, result: { id: HD, name: 'hd', origin: { scheme: 'mysql', host: 'h', database: 'd' }, caching: { disabled: true } } }) };
+    }
+    return { ok: false, status: 500, text: async () => '{}' };
+  };
+  const okHd = await assertApproachAHyperdrive({ acct: 'ACCT', token: 'TOK', fetchImpl }, HD);
+  ok('assertApproachAHyperdrive: mysql + caching off passes', okHd.id === HD && calls.length === 1);
+
+  const badCache = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify({ success: true, result: { id: HD, origin: { scheme: 'mysql' }, caching: { disabled: false } } }) });
+  ok('assertApproachAHyperdrive: caching on is refused', await throwsWith(() => assertApproachAHyperdrive({ acct: 'ACCT', token: 'TOK', fetchImpl: badCache }, HD), /caches queries|caching/));
+
+  const forbidden = async () => ({ ok: false, status: 403, text: async () => JSON.stringify({ success: false, errors: [] }) });
+  ok('assertApproachAHyperdrive: 403 is BLOCKED Hyperdrive Read', await throwsWith(() => assertApproachAHyperdrive({ acct: 'ACCT', token: 'TOK', fetchImpl: forbidden }, HD), /BLOCKED.*Hyperdrive Read|#431/));
+
+  const up5 = async () => ({ ok: false, status: 502, text: async () => JSON.stringify({ success: false, errors: [{ code: 10000 }] }) });
+  let upErr;
+  try { await assertApproachAHyperdrive({ acct: 'ACCT', token: 'TOK', fetchImpl: up5 }, HD); } catch (e) { upErr = e; }
+  ok('assertApproachAHyperdrive: Cloudflare 5xx is UpstreamError not BadRequest', upErr instanceof UpstreamError && !(upErr instanceof BadRequest) && upErr.status === 502 && /HTTP 502/.test(upErr.message));
+
+  const up429 = async () => ({ ok: false, status: 429, text: async () => JSON.stringify({ success: false, errors: [] }) });
+  let rateErr;
+  try { await assertApproachAHyperdrive({ acct: 'ACCT', token: 'TOK', fetchImpl: up429 }, HD); } catch (e) { rateErr = e; }
+  ok('assertApproachAHyperdrive: Cloudflare 429 is UpstreamError status 503', rateErr instanceof UpstreamError && rateErr.status === 503 && /HTTP 429/.test(rateErr.message));
 }
 {
   const WD = JSON.stringify({ 'workers.dev': { workersDev: true, subdomain: 'acme' } });

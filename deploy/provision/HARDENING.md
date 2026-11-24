@@ -88,7 +88,8 @@ return, so a re-add does not hash them.
 
 The c1 'shop' container store path was retired (#214): a store is a b-dosql site
 with WooCommerce active, not a separate provisioning kind. So the provisioning
-Worker mints only b-dosql ('wp') and runs on a SINGLE restricted token. The
+Worker mints b-dosql ('wp') and approach A ('a', #1455) on a SINGLE restricted
+token. The
 elevated `SHOP_PROVISION_TOKEN`, which could mint account tokens and edit
 Containers, is GONE. Values are env secrets; nothing is in code. Map each group
 to its id with `GET /accounts/{acct}/tokens/permission_groups` at mint time.
@@ -121,11 +122,12 @@ script also allows a plain script write, and there is no narrower group
 not by the token scope. (Correction written 2026-11-13; it supersedes the
 earlier claim here that the token lacked the plain-script scope.) The rest of
 the #182 containment is enforced by the token scope AND the code
-(`provision.mjs` no longer imports `mintScopedR2Token`; `selectToken` maps only
-`wp`; `validateRequest` rejects a 'shop'/'store' kind). `worker-test.mjs` proves
-the wp path makes no `/tokens` POST and no plain `/workers/scripts/<name>` write,
-and runs with no shop token in the env. The former c1 mint/container ops remain in
-`ops.mjs` as dormant, unreferenced library code (no provisioning path calls them).
+(`provision.mjs` no longer imports `mintScopedR2Token`; `selectToken` maps `wp`
+and `a` to the same restricted token; `validateRequest` rejects a 'shop'/'store'
+kind). `worker-test.mjs` proves the wp and a paths make no `/tokens` POST and no
+plain `/workers/scripts/<name>` write, and run with no shop token in the env. The
+former c1 mint/container ops remain in `ops.mjs` as dormant, unreferenced library
+code (no provisioning path calls them).
 
 ## What is NOT done here (the lead's lane)
 
@@ -242,10 +244,15 @@ the single restricted token) is shared and unchanged. (The c1 'shop' path and it
 elevated token were retired, #214, so there is one token, not two.)
 
 ### Path A: private operator provisioning (`POST /`)
-The existing design. A long-lived operator/service bearer token
-(`WP_PROVISION_TOKEN` restricted / `SHOP_PROVISION_TOKEN` elevated), held by the
-trusted internal signup backend. b-dosql ('wp') only since #214; the caller may choose the name
-(validated against `SITE_NAME_RE` + the reserved denylist). Modest rate limit.
+A long-lived operator bearer (`PROVISION_AUTH`) and the restricted
+`WP_PROVISION_TOKEN` (no minting, no Containers; #214). Kinds: `wp` (b-dosql)
+and `a` (approach A / Hyperdrive, #1455). The caller may choose the name
+(validated against `SITE_NAME_RE` + the reserved denylist). For `kind: a` the
+operator also sends `database` (Hyperdrive config id) and `placement` after
+auth; the Worker builds everything else and checks the config (MySQL, caching
+off). `plan: "free"` with `kind: "a"` is refused (measured Fail,
+`docs/results.md` A Free 2026-11-05). Modest rate limit. The token needs
+Hyperdrive Read for kind `a` (#431 ruling 1).
 
 ### Path B: public demo provisioning (`POST /demo`)
 The public demo front door, anyone can spin a throwaway demo. Every control is

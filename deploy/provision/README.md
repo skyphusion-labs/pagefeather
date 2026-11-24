@@ -119,11 +119,15 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   split and idempotency all live here + in `server-config.mjs`. See `HARDENING.md`.
   The Worker uses ONE restricted token (KV, Workers for Platforms, R2, and DNS for
   the one SaaS zone). It has no token-minting and no Containers scope.
-  **Approach A (`kind: a`) is the operator CLI path for now, not a Worker front
-  door:** it needs a per-tenant Hyperdrive config id, which the Worker's
-  trusted-config model has no source for until the onboarding flow (Phase 1)
-  feeds it one. `aBindings` is the shared source, so wiring the Worker to `a`
-  later cannot drift from the CLI. The Worker still mints `wp` only.
+  **Approach A (`kind: a`) on Path A (#1455):** the authenticated operator may
+  send `kind: "a"` with `database` (Hyperdrive config id) and `placement`, the
+  same inputs as `cli.mjs add --kind a`. The Worker still builds modules,
+  bindings, namespace, kv, zone and secrets. It reads the Hyperdrive config
+  (MySQL, caching off) before mint. `plan: "free"` with `kind: "a"` is
+  **BLOCKED** (measured Fail: `docs/results.md` A Free 2026-11-05). Free
+  single-site is `deploy/deploy.sh`, not this Worker. Path B (`/demo`) stays
+  `wp` only. A live HTTP Path A measure row is not yet in `docs/results.md`
+  (unmeasured until that deploy).
 
 ## Custom hostnames (end users bring their own domain)
 

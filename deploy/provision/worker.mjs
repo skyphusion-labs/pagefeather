@@ -1,17 +1,17 @@
 // Provisioning Worker, two hardened front doors over one inverted-cfg core (#182).
-// The caller always sends only { kind, name?, domain? }; the Worker builds every
-// binding and the code. See server-config.mjs for the security boundary, demo.mjs
-// for the Path B controls, and HARDENING.md for the design and token policies.
-// Still NOT routed; the lead owns the deploy gate.
+// Path A: the authenticated operator sends kind/name/domain (and for kind a,
+// Hyperdrive + placement after auth). The Worker builds bindings and code.
+// See server-config.mjs, demo.mjs, and HARDENING.md. Lead owns the deploy gate.
 //
-//   Path A (private): POST /         operator bearer, b-dosql (wp), caller names it.
+//   Path A (private): POST /         operator bearer, kind wp|a (CLI parity).
 //   Path B (public):  POST /demo     Turnstile, demo-tier b-dosql only, ephemeral.
 import { provisionSite } from './provision.mjs';
 import { readSite } from './registry.mjs';
 import {
   authorize, enforceRateLimit, callerKey,
-  validateRequest, selectToken, deriveTarget, buildServerCfg, BadRequest,
+  validateRequest, selectToken, deriveTarget, buildServerCfg, BadRequest, UpstreamError,
   verifyTurnstile, validatePublicRequest,
+  refuseImpossibleOperatorPlan, parseOperatorApproachA, assertApproachAHyperdrive,
 } from './server-config.mjs';
 import {
   assignDemoName, DEMO_TTL_MS, DEMO_MAX_PER_IP_PER_HOUR, DEMO_MAX_GLOBAL_PER_HOUR, DEMO_MAX_CONCURRENT,
@@ -61,7 +61,11 @@ async function handleOperator(request, env) {
   let body;
   try { body = await request.json(); } catch { return json({ ok: false, error: 'body is not JSON' }, 400); }
   let req;
-  try { req = validateRequest(body); } catch (e) { return json({ ok: false, error: e.message }, 400); }
+  try {
+    // Path A: wp (b-dosql) and a (Hyperdrive), same kinds as cli.mjs (#431 Worker slice).
+    req = validateRequest(body, { kinds: ['wp', 'a'] });
+    refuseImpossibleOperatorPlan(body, req.kind);
+  } catch (e) { return json({ ok: false, error: e.message }, 400); }
 
   try {
     const ctx = { acct: env.CF_ACCOUNT_ID, token: selectToken(env, req.kind), dispatcher: env.DISPATCHER };
@@ -71,11 +75,18 @@ async function handleOperator(request, env) {
       const admin = existing.adminUrl ? { url: existing.adminUrl, user: existing.adminUser || 'admin' } : undefined;
       return json({ ok: true, provisioned: existing.kind, name: req.name, script: existing.script, hostname: target.hostname, existing: true, installed: !!existing.installed, admin }, 200);
     }
-    const cfg = await buildServerCfg(env, req);
+    let aOpts = {};
+    if (req.kind === 'a') {
+      aOpts = parseOperatorApproachA(body, req.name);
+      await assertApproachAHyperdrive(ctx, aOpts.hyperdriveId);
+    }
+    const cfg = await buildServerCfg(env, { ...req, ...aOpts });
     const r = await provisionSite(ctx, cfg);
     return json({ ok: true, provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname, existing: !!r.existing, installed: !!r.installed, admin: r.admin }, 200);
   } catch (e) {
-    return json({ ok: false, error: e.message }, e instanceof BadRequest ? 400 : 500);
+    if (e instanceof BadRequest) return json({ ok: false, error: e.message }, 400);
+    if (e instanceof UpstreamError) return json({ ok: false, error: e.message }, e.status || 502);
+    return json({ ok: false, error: e.message }, 500);
   }
 }
 
