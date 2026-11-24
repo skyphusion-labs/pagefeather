@@ -10,6 +10,8 @@ body:
         A third-party claim is not a measurement.
         Record the row in `docs/results.md`.
         Do not paste secrets. Test deploys stay on a `workers.dev` address.
+        Date, Wrangler, Command, and Result are required when you Add or Correct a row.
+        Leave them blank when you only request a measurement.
   - type: dropdown
     id: kind
     attributes:
@@ -36,31 +38,32 @@ body:
     id: date-utc
     attributes:
       label: Date (UTC)
-      description: The day of the deploy and test, as YYYY-MM-DD.
+      description: Fill when you have the data (required for Add and Correct). The day of the deploy and test, as YYYY-MM-DD.
       placeholder: "2026-11-24"
     validations:
-      required: true
+      required: false
   - type: input
     id: wrangler
     attributes:
       label: Wrangler version
+      description: Fill when you have the data (required for Add and Correct).
       placeholder: "4.157.0"
     validations:
-      required: true
+      required: false
   - type: textarea
     id: command
     attributes:
       label: Command
-      description: The exact deploy or test command. Redact account secrets.
+      description: Fill when you have the data (required for Add and Correct). The exact deploy or test command. Redact account secrets.
     validations:
-      required: true
+      required: false
   - type: textarea
     id: result
     attributes:
       label: Result
-      description: What happened. Include pass or fail counts, errors, and numbers you measured.
+      description: Fill when you have the data (required for Add and Correct). What happened. Include pass or fail counts, errors, and numbers you measured.
     validations:
-      required: true
+      required: false
   - type: input
     id: matrix-id
     attributes:
@@ -72,6 +75,6 @@ body:
     id: notes
     attributes:
       label: Notes
-      description: Link related issues. Say if a later row should correct this one.
+      description: Link related issues. Say if a later row should correct this one. For a request, say what to measure and why.
     validations:
       required: false
