@@ -257,6 +257,10 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
   ok('kind a: no PHP_RUNTIME Durable Object', !aMeta.bindings.some((b) => b.type === 'durable_object_namespace'));
   ok('kind a: placement targeted region on the upload', aMeta.placement && aMeta.placement.mode === 'targeted' && aMeta.placement.region === 'azure:westus2');
   ok('kind a: injected modules still ignored (a bundle only)', aDeploy.body.get('evil.js') === null);
+  ok('kind a: NO account-token mint (same restricted token as wp)',
+    !r.calls.some((c) => c.method === 'POST' && c.url.endsWith('/tokens')));
+  ok('kind a: NO plain /workers/scripts write',
+    !r.calls.some((c) => /\/workers\/scripts\/site-mystore$/.test(c.url)));
 
   const inj = await run(makeEnv(), req({
     kind: 'a', name: 'ainject', domain: 'skyphusionwp.dev', database: HD_OK, placement: 'none',
