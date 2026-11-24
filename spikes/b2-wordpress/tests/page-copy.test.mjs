@@ -96,7 +96,7 @@ test('busyAnswerFor: everything else is returned untouched (the same object)', (
 });
 test('index.js: the gateway fetch passes every answer through busyAnswerFor, and uses the module conditions', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /return operatorNoStore\(scrubPerfHeaders\(busyAnswerFor\(req, new URL\(req\.url\), env, await this\.serve\(req, env, ctx\)\), perfHeadersAllowed\(req, env\)\), req\);/);
+	assert.match(src, /return operatorNoStore\(scrubPerfHeaders\(busyAnswerFor\(req, new URL\(req\.url\), env, await this\.serve\(req, env, ctx\)\), await perfHeadersAllowed\(req, env\)\), req\);/);
 	assert.doesNotMatch(src, /^function pageCacheRoute\(/m, 'pageCacheRoute lives in page-copy.mjs only');
 	assert.doesNotMatch(src, /^const (WP_COOKIE|PAGE_CACHE_NO_PATH|PAGE_CACHE_NO_PARAM) =/m, 'the conditions live in page-copy.mjs only');
 	const ph = src.slice(src.indexOf('function pageCacheHeaders('), src.indexOf('function pageCacheHeaders(') + 1200);

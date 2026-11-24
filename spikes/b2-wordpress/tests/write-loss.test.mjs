@@ -162,7 +162,7 @@ test('#1004: internal write-loss carries x-platform-error and no x-isolate-reset
 });
 
 const indexSrc = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-const memAt = indexSrc.indexOf('function memIdOf(req, env) {');
+const memAt = indexSrc.indexOf('async function memIdOf(req, env) {');
 const memBody = indexSrc.slice(memAt, indexSrc.indexOf('\n}', memAt) + 2);
 const memRe = indexSrc.split('\n').find((l) => l.includes('const MEM_ID_RE = ')).match(/const MEM_ID_RE = (\/.*\/);/);
 const MEM_ID_RE = new Function(`return ${memRe[1]};`)();
@@ -178,9 +178,9 @@ function objectLiteral(line) {
 	}
 	throw new Error('no object literal: ' + line);
 }
-function logged(line, scope) {
+async function logged(line, scope) {
 	const names = Object.keys(scope);
-	const value = new Function(...names, 'return ' + objectLiteral(line) + ';')(...names.map((k) => scope[k]));
+	const value = await new Function(...names, 'return (async () => (' + objectLiteral(line) + '))()')(...names.map((k) => scope[k]));
 	return JSON.parse(JSON.stringify(value));
 }
 
@@ -188,7 +188,7 @@ const PERF_ID = 'm504-woo-97e9cd-8-edit-post';
 const TOKEN = 'spike-token-value';
 const post = (headers) => new Request('https://shop.example/wp-admin/post.php', { method: 'POST', headers });
 
-test('#596: the write-loss lines carry id for a valid x-perf-id, no id without one, and answered equal to the status returned', () => {
+test('#596: the write-loss lines carry id for a valid x-perf-id, no id without one, and answered equal to the status returned', async () => {
 	const lines = indexSrc.split('\n').filter((l) => l.includes("m: 'write-loss'"));
 	assert.equal(lines.length, 2, 'the PHP-answered line and the request-killed line');
 	const phpLine = lines.find((l) => l.includes('phpStatus'));
@@ -214,7 +214,7 @@ test('#596: the write-loss lines carry id for a valid x-perf-id, no id without o
 		callTag: () => ({}),
 		callId: undefined,
 	};
-	const withId = logged(phpLine, base);
+	const withId = await logged(phpLine, base);
 	assert.equal(withId.id, PERF_ID, 'a valid x-perf-id is on the line, got ' + JSON.stringify(withId));
 	assert.equal(withId.answered, base.wl.status, 'answered is the status the client got');
 	assert.equal(withId.answered, 500);
@@ -226,36 +226,36 @@ test('#596: the write-loss lines carry id for a valid x-perf-id, no id without o
 	assert.equal(withId.firstSql, 'UPDATE wp_postmeta');
 	assert.equal(withId['@event'], 'write-loss');
 	// 321 is not a real status: it proves the field is wl.status, not a hardcoded 500 and not phpStatus.
-	assert.equal(logged(phpLine, { ...base, wl: { status: 321 } }).answered, 321);
+	assert.equal((await logged(phpLine, { ...base, wl: { status: 321 } })).answered, 321);
 
-	const noHeader = logged(phpLine, { ...base, req: post({ 'x-spike-token': TOKEN }) });
+	const noHeader = await logged(phpLine, { ...base, req: post({ 'x-spike-token': TOKEN }) });
 	assert.equal(Object.hasOwn(noHeader, 'id'), false, 'no id without x-perf-id, got ' + JSON.stringify(noHeader));
 	assert.equal(noHeader.answered, base.wl.status);
 	assert.equal(noHeader.phpStatus, 200);
 
-	const visitor = logged(phpLine, { ...base, req: post({ 'x-perf-id': PERF_ID }), env: { SPIKE_TOKEN: TOKEN } });
+	const visitor = await logged(phpLine, { ...base, req: post({ 'x-perf-id': PERF_ID }), env: { SPIKE_TOKEN: TOKEN } });
 	assert.equal(Object.hasOwn(visitor, 'id'), false, 'a visitor id is not logged');
-	const unsafe = logged(phpLine, { ...base, req: post({ 'x-perf-id': 'not a safe id', 'x-spike-token': TOKEN }) });
+	const unsafe = await logged(phpLine, { ...base, req: post({ 'x-perf-id': 'not a safe id', 'x-spike-token': TOKEN }) });
 	assert.equal(Object.hasOwn(unsafe, 'id'), false, 'an id outside MEM_ID_RE is not logged');
-	const tooLong = logged(phpLine, { ...base, req: post({ 'x-perf-id': 'a'.repeat(65), 'x-spike-token': TOKEN }) });
+	const tooLong = await logged(phpLine, { ...base, req: post({ 'x-perf-id': 'a'.repeat(65), 'x-spike-token': TOKEN }) });
 	assert.equal(Object.hasOwn(tooLong, 'id'), false);
-	const on = logged(phpLine, { ...base, req: post({ 'x-perf-id': PERF_ID }), env: { PERF_HEADERS: 'on' } });
+	const on = await logged(phpLine, { ...base, req: post({ 'x-perf-id': PERF_ID }), env: { PERF_HEADERS: 'on' } });
 	assert.equal(on.id, PERF_ID, 'PERF_HEADERS=on is the other operator path');
 
 	for (const wl of [
 		writeLossResponse('unknown', false, 'memory'),
 		rolledBackResponse(true, 'storage', 2),
 	]) {
-		const killed = logged(killedLine, { ...base, wl, kind: wl.headers['x-isolate-reset'] });
+		const killed = await logged(killedLine, { ...base, wl, kind: wl.headers['x-isolate-reset'] });
 		assert.equal(killed.answered, wl.status, 'the killed line answered matches the response');
 		assert.equal(killed.phase, 'request-killed');
 		assert.equal(killed.failed, 'unknown');
 		assert.equal(Object.hasOwn(killed, 'phpStatus'), false, 'PHP never answered on this path');
-		assert.equal(logged(killedLine, { ...base, wl: { status: 321 } }).answered, 321);
+		assert.equal((await logged(killedLine, { ...base, wl: { status: 321 } })).answered, 321);
 	}
-	const killedId = logged(killedLine, base);
+	const killedId = await logged(killedLine, base);
 	assert.equal(killedId.id, PERF_ID);
-	const killedNone = logged(killedLine, { ...base, req: post({ 'x-spike-token': TOKEN }) });
+	const killedNone = await logged(killedLine, { ...base, req: post({ 'x-spike-token': TOKEN }) });
 	assert.equal(Object.hasOwn(killedNone, 'id'), false);
 
 	const guard = indexSrc.indexOf('const lost = resetFailures(d.failures);');
@@ -406,7 +406,7 @@ test('#1039 index.js: the write-loss answer says "rolled back" only when the fra
 	assert.match(src, /await r2RecordIfNew\(B, op\.key\);\s*await B\.put\(op\.key/, 'a created key is recorded BEFORE its put');
 });
 
-test('#1101: both write-loss lines carry the call id when the request has one', () => {
+test('#1101: both write-loss lines carry the call id when the request has one', async () => {
 	const lines = indexSrc.split('\n').filter((l) => l.includes("m: 'write-loss'"));
 	const phpLine = lines.find((l) => l.includes('phpStatus'));
 	const killedLine = lines.find((l) => l.includes("phase: 'request-killed'"));
@@ -416,8 +416,8 @@ test('#1101: both write-loss lines carry the call id when the request has one', 
 		wl: writeLossResponse(1, false), ocForgot: { n: 0, groups: {} }, rolled: null,
 		ctx: null, callTag: () => ({ call: 'c-1101' }), callId: 'c-1101',
 	};
-	assert.equal(logged(phpLine, scope).call, 'c-1101');
-	assert.equal(logged(killedLine, scope).call, 'c-1101');
+	assert.equal((await logged(phpLine, scope)).call, 'c-1101');
+	assert.equal((await logged(killedLine, scope)).call, 'c-1101');
 });
 
 // #1178: the lean bridge's connection faults are PLATFORM failures (a 5xx with x-sql-failure), never deterministic.

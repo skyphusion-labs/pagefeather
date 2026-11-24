@@ -159,6 +159,7 @@ check "media: stored key, size and type" "$(python3 -c 'import json,sys; print(s
 
 # 9. Variant a: mysql-prepare.py (the statements /_sqlimport runs).
 cp "$IMP/../../spikes/b2-wordpress/sql-import.js" "$T/sql-import.mjs"
+cp "$IMP/../../spikes/b2-wordpress/token-equal.mjs" "$T/token-equal.mjs"
 python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/my.jsonl" --prefix wpx_ --to-prefix wp_ --flavour mysql --max-statement 1048576 --old https://old.example.com --new https://wp.acct.workers.dev > "$T/my.json"
 j() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); [v := v[k] for k in sys.argv[2:]]; print(json.dumps(v, sort_keys=True))' "$T/my.json" "$@"; }
 check "mysql: rows per table" "$(j rows)" '{"wp_blobs": 4, "wp_options": 12, "wp_posts": 4, "wp_usermeta": 5}'

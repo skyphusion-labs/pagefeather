@@ -262,7 +262,7 @@ test('index.js applies the deadline inside toPhpObject and returns it before any
 	assert.match(fn, /object-deadline-retry/);
 	assert.match(fn, /if \(res\.deadline\) \{/);
 	assert.match(fn, /m: 'object-deadline'/);
-	assert.match(fn, /\.\.\.memIdOf\(req, env\)/);
+	assert.match(fn, /\.\.\.\(await memIdOf\(req, env\)\)/);
 	// /_frame probes before the PHP call. The write-loss probe is the one that
 	// must not run after a deadline: it is another stub.fetch to the same object.
 	const back = fn.indexOf('if (res.deadline) {');

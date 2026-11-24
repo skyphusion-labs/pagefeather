@@ -23,24 +23,24 @@ function bucket({ headSize } = {}) {
 const req = (method, token) => new Request('https://snapshot.internal/_dbsnapshot', { method, headers: token === undefined ? {} : { [SNAPSHOT_HEADER]: token } });
 const NOW = Date.UTC(2026, 10, 14, 7, 17, 3);
 
-test('sameToken: equal only for the same non-empty string', () => {
-	assert.equal(sameToken('abc', 'abc'), true);
-	assert.equal(sameToken('abd', 'abc'), false);
-	assert.equal(sameToken('ab', 'abc'), false);
-	assert.equal(sameToken('abcd', 'abc'), false);
-	assert.equal(sameToken('', ''), false);
+test('sameToken: equal only for the same non-empty string', async () => {
+	assert.equal(await sameToken('abc', 'abc'), true);
+	assert.equal(await sameToken('abd', 'abc'), false);
+	assert.equal(await sameToken('ab', 'abc'), false);
+	assert.equal(await sameToken('abcd', 'abc'), false);
+	assert.equal(await sameToken('', ''), false);
 });
 
-test('the gate: no token on the site, a wrong token, no header: all 403; a right token with GET: 405', () => {
-	assert.equal(snapshotGate(req('POST', 'x'), {}), 'forbidden');
-	assert.equal(snapshotGate(req('POST', 'x'), { SNAPSHOT_TOKEN: '' }), 'forbidden');
-	assert.equal(snapshotGate(req('POST', 'wrong'), { SNAPSHOT_TOKEN: 'right' }), 'forbidden');
-	assert.equal(snapshotGate(req('POST'), { SNAPSHOT_TOKEN: 'right' }), 'forbidden');
-	assert.equal(snapshotGate(req('GET', 'wrong'), { SNAPSHOT_TOKEN: 'right' }), 'forbidden');
-	assert.equal(snapshotGate(req('GET', 'right'), { SNAPSHOT_TOKEN: 'right' }), 'method');
-	assert.equal(snapshotGate(req('POST', 'right'), { SNAPSHOT_TOKEN: 'right' }), 'ok');
+test('the gate: no token on the site, a wrong token, no header: all 403; a right token with GET: 405', async () => {
+	assert.equal(await snapshotGate(req('POST', 'x'), {}), 'forbidden');
+	assert.equal(await snapshotGate(req('POST', 'x'), { SNAPSHOT_TOKEN: '' }), 'forbidden');
+	assert.equal(await snapshotGate(req('POST', 'wrong'), { SNAPSHOT_TOKEN: 'right' }), 'forbidden');
+	assert.equal(await snapshotGate(req('POST'), { SNAPSHOT_TOKEN: 'right' }), 'forbidden');
+	assert.equal(await snapshotGate(req('GET', 'wrong'), { SNAPSHOT_TOKEN: 'right' }), 'forbidden');
+	assert.equal(await snapshotGate(req('GET', 'right'), { SNAPSHOT_TOKEN: 'right' }), 'method');
+	assert.equal(await snapshotGate(req('POST', 'right'), { SNAPSHOT_TOKEN: 'right' }), 'ok');
 	// The spike token is a different key: it never opens this route.
-	assert.equal(snapshotGate(new Request('https://x/_dbsnapshot', { method: 'POST', headers: { 'x-spike-token': 'right' } }), { SNAPSHOT_TOKEN: 'right', SPIKE_TOKEN: 'right' }), 'forbidden');
+	assert.equal(await snapshotGate(new Request('https://x/_dbsnapshot', { method: 'POST', headers: { 'x-spike-token': 'right' } }), { SNAPSHOT_TOKEN: 'right', SPIKE_TOKEN: 'right' }), 'forbidden');
 	assert.equal(gateResponse('forbidden').status, 403);
 	assert.equal(gateResponse('method').status, 405);
 });

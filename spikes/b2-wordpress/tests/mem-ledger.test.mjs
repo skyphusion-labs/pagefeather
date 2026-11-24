@@ -106,7 +106,7 @@ test('sqlMeter and ledgerOn', () => {
 
 
 test('index.js: off by default, per request, and snapshots at the memory-limit SQL write, write-loss and end', () => {
-	assert.match(src, /ledgerActive = ledgerOn\(env, req\.headers\.get\('x-mem-ledger'\), perfHeadersAllowed\(req, env\)\);/);
+	assert.match(src, /ledgerActive = ledgerOn\(env, req\.headers\.get\('x-mem-ledger'\), await perfHeadersAllowed\(req, env\)\);/);
 	assert.match(src, /ledger\.register\(php, serial, instMemory\);/);
 	const sql = src.indexOf('const reply = sqlStatement(sqlDb, m);');
 	const blk = src.slice(sql, src.indexOf('return out;', sql));
