@@ -45,7 +45,7 @@ The full map of every page is the [docs map](docs/README.md). Every setting for 
 
 - One built-in database site on Workers Paid: $5 a month ([cost](docs/guide/cost.md), read 2026-11-06).
 - Many sites on Workers for Platforms: $30 a month for two or more sites (same page).
-- MySQL option: Workers Paid ($5 a month) plus your MySQL server. A `MYSQL=vultr` box is $10 a month ([cost](docs/guide/cost.md#the-mysql-option-the-database-server)).
+- MySQL option: Workers Paid ($5 a month) plus a managed MySQL host. Prefer Azure Database for MySQL or PlanetScale ([cost](docs/guide/cost.md#the-mysql-option-the-database-server)).
 
 ## Contributing
 

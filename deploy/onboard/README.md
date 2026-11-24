@@ -139,10 +139,9 @@ name, local by default.
 
 - `external` and `azure`-reuse: free (a Hyperdrive config is free).
 - `azure`-create: free config; the Azure server is an existing paid resource.
-- `vultr`: the box is about $10 a month at `vc2-1c-2gb`, more at `vc2-2c-4gb`,
-  billed by the hour.
 - `planetscale`: `PS-10` is a paid plan (about $39 a month, measured for
   `wp-on-cf-a2`), on the single Cloudflare bill.
+- Prefer Azure or PlanetScale for approach A. Do not pitch a VPS MySQL box.
 
 ## Tests
 

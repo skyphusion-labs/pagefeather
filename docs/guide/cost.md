@@ -34,7 +34,7 @@ The per-plan Cloudflare limits that decide the matrix in the root [README](../..
 
 ## The MySQL option: the database server
 
-The MySQL option runs on Workers Paid ($5 a month) and needs a MySQL server, which you pay for separately. A database box made by `MYSQL=vultr` is $10 a month, billed by the hour: a Vultr `vc2-1c-2gb` box with 1 vCPU and 2 GB ([`deploy/mysql/variables.tf`](../../deploy/mysql/variables.tf), [full reference](../../deploy/README.md#variant-a-php-in-the-worker-mysql-through-hyperdrive-workers-paid)). Any other MySQL server is your own bill.
+The MySQL option runs on Workers Paid ($5 a month) and needs a MySQL server, which you pay for separately. Use a managed database host. Prefer Azure Database for MySQL or PlanetScale. Both are measured for approach A ([onboarding](onboarding.md); [evidence](../approach-a-overview.md#choose-a-database-provider); [full reference](../../deploy/README.md#variant-a-php-in-the-worker-mysql-through-hyperdrive-workers-paid)). The database bill is yours, not Cloudflare's.
 
 ## Cost of a pagefeather Workers for Platforms account
 

@@ -34,8 +34,9 @@ Pick the one that suits you. The short table below is enough to choose. The full
 | --- | --- |
 | PlanetScale, billed through Cloudflare | You want one Cloudflare bill and the least to manage. |
 | Azure Database for MySQL | You want the fastest measured checkout and have an Azure account or credit. |
-| A VPS you run (MariaDB or MySQL) | You want the lowest cost and can look after a server. |
-| An existing MySQL you already have | You have a database and want to reuse it. |
+| An existing managed MySQL you already have | You already run Azure, PlanetScale, or another managed host. |
+
+Do not stand up a VPS only to host MySQL for approach A. Prefer a managed host.
 
 Before step 2, have these ready:
 
@@ -56,7 +57,7 @@ The onboarding step reads your provider choice and makes the Hyperdrive configur
 
 Output of this step: the id of one Hyperdrive configuration, plus the `SQL_MODE` the provider needs. Step 3 takes both as input.
 
-Set your Cloudflare account id and an API token that can edit Hyperdrive, then run the onboarding step for your provider. `<provider>` is one of `azure`, `planetscale`, `vultr`, `external`:
+Set your Cloudflare account id and an API token that can edit Hyperdrive, then run the onboarding step for your provider. `<provider>` is one of `azure`, `planetscale`, or `external`:
 
 ```sh
 export CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=...
