@@ -568,10 +568,28 @@ export function bDosqlResourceCreateOps(opts = {}) {
   return assembleBDosql(opts).resourceCreateOps;
 }
 
+// #328 PR 1: the ONE table of derived resource names for a site. deploy/wfp/lib.sh
+// helpers, terraform/site locals, and bindings.py ownership checks must agree with
+// these strings. Emitters and teardown read this table; they do not re-spell names.
+export function siteNames(name) {
+  if (typeof name !== 'string' || !name) throw new Error('siteNames: name is required');
+  return {
+    script: `site-${name}`,
+    dispatcher: `wp-${name}`,
+    mediaBucket: `wp-wfp-${name}-media`,
+    ocKv: `wp-wfp-${name}-oc`,
+    emailQueue: `wp-wfp-${name}-email`,
+    emailDlq: `wp-wfp-${name}-email-dlq`,
+    analyticsDataset: `wp-wfp-${name}-analytics`,
+    searchIndex: `wp-wfp-${name}-search`,
+    hyperdriveConfig: `wp-wfp-${name}`,
+  };
+}
+
 // The media bucket name for a site, the one name both the binding and the
 // bucket-create must agree on (wp-wfp-<name>-media, per bindings.py).
 export function mediaBucketName(name) {
-  return `wp-wfp-${name}-media`;
+  return siteNames(name).mediaBucket;
 }
 
 
@@ -712,17 +730,17 @@ export function aBindings({
 // create and the id lookup agree on (wp-wfp-<name>-oc; the wp-wfp- prefix is in
 // RESERVED_PREFIXES so a tenant can never mint a colliding name).
 export function ocKvNamespaceName(name) {
-  return `wp-wfp-${name}-oc`;
+  return siteNames(name).ocKv;
 }
 
 // The per-site durable-email queue name (#190) and its dead-letter queue. Both
 // carry the wp-wfp- reserved prefix (RESERVED_PREFIXES) so a tenant can never mint
 // a colliding name, the same guarantee as ocKvNamespaceName / mediaBucketName.
 export function emailQueueName(name) {
-  return `wp-wfp-${name}-email`;
+  return siteNames(name).emailQueue;
 }
 export function emailDlqName(name) {
-  return `wp-wfp-${name}-email-dlq`;
+  return siteNames(name).emailDlq;
 }
 
 // The per-site Analytics Engine dataset name (#201 Phase 2). Carries the wp-wfp-
@@ -733,14 +751,14 @@ export function emailDlqName(name) {
 // queries. It is NOT a plain SQL identifier (it has hyphens), so the operator read
 // query double-quotes it (docs/guide/operator.md).
 export function analyticsDatasetName(name) {
-  return `wp-wfp-${name}-analytics`;
+  return siteNames(name).analyticsDataset;
 }
 
 // The per-site Vectorize index name (#201 Phase 2) for semantic search. Carries
 // the wp-wfp- reserved prefix (RESERVED_PREFIXES) so a tenant can never mint a
 // colliding name, the same guarantee as ocKvNamespaceName / emailQueueName.
 export function searchIndexName(name) {
-  return `wp-wfp-${name}-search`;
+  return siteNames(name).searchIndex;
 }
 
 // The embedding model the search index is sized for, passed to Vectorize v2 as a
