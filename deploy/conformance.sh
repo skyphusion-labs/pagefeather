@@ -11,6 +11,9 @@
 #   - IMPORT_PLUGINS names woocommerce-cleanup, woocommerce-e2e-test-helper or gutenberg-test-plugins;
 #   - SUITE or THEME_SUITE points into tests/conformance/ (the conformance-only pins: plugins.txt, themes.txt);
 #   - IMPORT_CONTENT is a wp-content that holds mu-plugins/pf-conformance-throwaway.php, whatever IMPORT_* says.
+# #1427: that imported copy can be from an older prepare-content.sh, so a marker fix never reached the site.
+# When CONFORMANCE=on, conformance_marker_install copies tests/conformance/php/pf-conformance-throwaway.php
+# over it. build.sh calls that after content.sh --mu.
 # Then it is allowed only when ALL hold: CONFORMANCE=on (the run states it carries this content: a deploy-time
 # statement only, never rendered or recorded, so not a runtime switch), THROWAWAY=1, and the site is named and not
 # live (neither
@@ -26,6 +29,20 @@ CONFORMANCE_MARKER=pf-conformance-throwaway.php
 # The secret makes siteverify return success. Both values are public.
 CONFORMANCE_TURNSTILE_SITEKEY=1x00000000000000000000AA
 CONFORMANCE_TURNSTILE_SECRET=1x0000000000000000000000000000000AA
+
+# conformance_marker_install <build wp-content>: when CONFORMANCE=on, install the tree's marker
+# over whatever IMPORT_CONTENT brought in. One line on stderr says so. Otherwise change nothing.
+# The tree file is tests/conformance/php/pf-conformance-throwaway.php (#1427).
+conformance_marker_install() {
+  [ "${CONFORMANCE:-}" = on ] || return 0
+  local dst=${1:?build wp-content} root src
+  root=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+  src="$root/tests/conformance/php/$CONFORMANCE_MARKER"
+  [ -f "$src" ] || { echo "conformance: the build tree has no $src" >&2; return 1; }
+  mkdir -p "$dst/mu-plugins"
+  cp "$src" "$dst/mu-plugins/$CONFORMANCE_MARKER"
+  echo "conformance: installed $CONFORMANCE_MARKER from the build tree over any copy from IMPORT_CONTENT" >&2
+}
 
 # conformance_content: prints the first trigger found, nothing when the inputs carry no conformance content.
 conformance_content() {

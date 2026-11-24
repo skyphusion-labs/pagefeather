@@ -18,6 +18,8 @@ check. The content is present when any of these holds:
 - `SUITE` or `THEME_SUITE` points into `tests/conformance/` (the conformance-only pins);
 - `IMPORT_CONTENT` is a `wp-content` that holds `mu-plugins/pf-conformance-throwaway.php`, whatever `IMPORT_*` says.
 
+When `CONFORMANCE=on`, the build installs `tests/conformance/php/pf-conformance-throwaway.php` into the site, over any copy `IMPORT_CONTENT` brought in. A marker fix reaches a redeploy without preparing the content again (#1427).
+
 With the content, a deploy needs `CONFORMANCE=on` (the run states that it carries this content: a deploy-time
 statement only, never rendered or recorded), `THROWAWAY=1`, and a named site that is not live (neither `deploy/live-sites/<name>.env`
 nor `deploy/wfp/live-sites/<name>`; ggc and ggc-test are refused). It is checked, before any step, at the entry of

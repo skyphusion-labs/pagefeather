@@ -48,10 +48,14 @@ with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
     check("no content input prints nothing (a plain build keeps its id)", m.content_id(a, {}) == "")
     check("PLUGINS alone is a content input", m.content_id(a, {"PLUGINS": "wordpress-seo"}).startswith("c"))
     # THEMES, SUITE and THEME_SUITE (#457): hashed only when set, so the ids of existing builds do not move.
+    # SUITE and THEME_SUITE are pin files. gate2-build.txt is a real list; the theme list is a real file (#1427).
     check("THEMES alone is a content input", m.content_id(a, {"THEMES": "hello-elementor"}).startswith("c"))
     check("a changed THEMES gives a new id", m.content_id(a, {**env, "THEMES": "astra"}) != m.content_id(a, {**env, "THEMES": "hello-elementor"}))
     check("a changed SUITE gives a new id", m.content_id(a, {**env, "SUITE": "gate2-build.txt"}) != m.content_id(a, env))
-    check("a changed THEME_SUITE gives a new id", m.content_id(a, {**env, "THEME_SUITE": "x.txt"}) != m.content_id(a, env))
+    theme_pins = os.path.join(a, "theme-pins.txt")
+    with open(theme_pins, "w", encoding="utf-8") as fp:
+        fp.write("twentytwentyfive 1.0 abc\n")
+    check("a changed THEME_SUITE gives a new id", m.content_id(a, {**env, "THEME_SUITE": theme_pins}) != m.content_id(a, env))
     check("the new inputs, when empty, leave an existing id as it was", m.content_id(a, {**env, "THEMES": "", "SUITE": "", "THEME_SUITE": " "}) == m.content_id(a, env))
 
 # The ids of builds made before #457 do not move (#457 hashes THEMES, SUITE and THEME_SUITE only when

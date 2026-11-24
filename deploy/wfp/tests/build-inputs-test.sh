@@ -156,12 +156,15 @@ run_update norecord WOO_ACTIVE=0; check "only WOO_ACTIVE=0 passed, recorded 1: r
 
 # 4b. THEMES and the pin lists (#457) are recorded and reused like the other inputs. Without SUITE in
 # the record, a later update read the default suite.txt and skipped a slug pinned only in another list.
-IN2=("${IN[@]}" THEMES=hello-elementor SUITE=gate2-build.txt THEME_SUITE=themes.txt)
+# Absolute paths: content-id.py hashes the pin file (#1427), and this stand-in copy of it does not
+# sit in the repo, so a bare name would not resolve to tests/plugins/.
+REPO=$(cd "$HERE/../../.." && pwd)
+IN2=("${IN[@]}" THEMES=hello-elementor SUITE="$REPO/tests/plugins/gate2-build.txt" THEME_SUITE="$REPO/tests/plugins/themes.txt")
 run_update record REPLACE_INPUTS=1 "${IN2[@]}"; check "THEMES, SUITE and THEME_SUITE: a good update records them" "$?" 0
 run_update norecord; check "  an update with no input is allowed" "$?" 0
 check "  THEMES is the recorded value" "$(grep '^THEMES=' "$T/vars")" "THEMES=hello-elementor"
-check "  SUITE is the recorded value" "$(grep '^SUITE=' "$T/vars")" "SUITE=gate2-build.txt"
-check "  THEME_SUITE is the recorded value" "$(grep '^THEME_SUITE=' "$T/vars")" "THEME_SUITE=themes.txt"
+check "  SUITE is the recorded value" "$(grep '^SUITE=' "$T/vars")" "SUITE=$REPO/tests/plugins/gate2-build.txt"
+check "  THEME_SUITE is the recorded value" "$(grep '^THEME_SUITE=' "$T/vars")" "THEME_SUITE=$REPO/tests/plugins/themes.txt"
 run_update norecord "${IN[@]}" THEMES=astra SUITE=gate2-build.txt THEME_SUITE=themes.txt; check "  a different THEMES is refused" "$?" 2
 check "    the difference is named" "$(grep -c 'THEMES: recorded' "$T/use.out")" 1
 run_update norecord "${IN[@]}" THEMES=hello-elementor THEME_SUITE=themes.txt; check "  a dropped SUITE is refused" "$?" 2
