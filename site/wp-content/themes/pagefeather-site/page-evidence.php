@@ -5,6 +5,7 @@
  * @package Pagefeather_Site
  */
 get_header();
+$gh = 'https://github.com/skyphusion-labs/pagefeather/blob/main';
 ?>
 <main id="main" class="shell">
 	<div class="page-hero reveal">
@@ -16,10 +17,10 @@ get_header();
 	<section class="reveal">
 		<blockquote class="quote">
 			Conformance comes before performance. The upstream WordPress, WooCommerce, and Gutenberg test suites decide what works means.
-			<cite>docs/conformance.md</cite>
+			<cite><a href="<?php echo esc_url($gh . '/docs/conformance.md'); ?>">docs/conformance.md</a></cite>
 		</blockquote>
 		<div class="prose" style="margin-top:1.5rem;">
-			<p>The ledger is <a href="https://github.com/skyphusion-labs/pagefeather/blob/main/docs/results.md">docs/results.md</a>. Each row is one deploy and one test run. A failed deploy stays in the table. A later row may correct an earlier row. The earlier row stays.</p>
+			<p>The ledger is <a href="<?php echo esc_url($gh . '/docs/results.md'); ?>">docs/results.md</a>. Each row is one deploy and one test run. A failed deploy stays in the table. A later row may correct an earlier row. The earlier row stays.</p>
 		</div>
 	</section>
 
@@ -34,14 +35,38 @@ get_header();
 					<tr><th>Claim</th><th>Where</th></tr>
 				</thead>
 				<tbody>
-					<tr><td><strong>Cached guests about 26 to 30 req/s</strong>, p50 near 200&nbsp;ms</td><td>docs/load-152.md · 2026-11-08</td></tr>
-					<tr><td><strong>b-dosql ~5 uncached req/s</strong>; refuse near 100 clients</td><td>docs/perf-dosql.md</td></tr>
-					<tr><td><strong>43 resets / 49 lost writes</strong> per 1000 server requests</td><td>cf759a · 2026-11-22 · #1022</td></tr>
-					<tr><td><strong>wp 18/18</strong>; routes.py 0 failures</td><td>cf759hw · 2026-11-20</td></tr>
-					<tr><td><strong>woo.py 12/12</strong>, three runs</td><td>results.md · 2026-11-09</td></tr>
-					<tr><td><strong>Up to 118 isolates</strong> at 50 concurrent users</td><td>results.md · 2026-11-09</td></tr>
-					<tr><td><strong>Fresh-clone Pass</strong> for b-dosql, WfP, approach A</td><td>results.md · 2026-11-24</td></tr>
-					<tr><td><strong>Workers Paid $5/mo</strong>; WfP path $30/mo at rest</td><td>docs/guide/cost.md · read 2026-11-06</td></tr>
+					<tr>
+						<td><strong>Cached guests about 26 to 30 req/s</strong>, p50 near 200&nbsp;ms</td>
+						<td><a href="<?php echo esc_url($gh . '/docs/load-152.md'); ?>">docs/load-152.md</a> · 2026-11-08</td>
+					</tr>
+					<tr>
+						<td><strong>b-dosql about 5 uncached req/s</strong>; refuse near 100 clients</td>
+						<td><a href="<?php echo esc_url($gh . '/docs/perf-dosql.md'); ?>">docs/perf-dosql.md</a></td>
+					</tr>
+					<tr>
+						<td><strong>43 resets / 49 lost writes</strong> per 1000 server requests</td>
+						<td>cf759a · 2026-11-22 · <a href="https://github.com/skyphusion-labs/pagefeather/issues/1022">#1022</a></td>
+					</tr>
+					<tr>
+						<td><strong>wp 18/18</strong>; routes.py 0 failures</td>
+						<td>cf759hw · 2026-11-20 · <a href="<?php echo esc_url($gh . '/docs/results.md'); ?>">docs/results.md</a></td>
+					</tr>
+					<tr>
+						<td><strong>woo.py 12/12</strong>, three runs</td>
+						<td><a href="<?php echo esc_url($gh . '/docs/results.md'); ?>">docs/results.md</a> · 2026-11-09</td>
+					</tr>
+					<tr>
+						<td><strong>Up to 118 isolates</strong> at 50 concurrent users</td>
+						<td><a href="<?php echo esc_url($gh . '/docs/results.md'); ?>">docs/results.md</a> · 2026-11-09</td>
+					</tr>
+					<tr>
+						<td><strong>Fresh-clone Pass</strong> for b-dosql, WfP, approach A</td>
+						<td><a href="<?php echo esc_url($gh . '/docs/results.md'); ?>">docs/results.md</a> · 2026-11-24</td>
+					</tr>
+					<tr>
+						<td><strong>Workers Paid $5/mo</strong>; WfP path $30/mo at rest</td>
+						<td><a href="<?php echo esc_url($gh . '/docs/guide/cost.md'); ?>">docs/guide/cost.md</a> · read 2026-11-06</td>
+					</tr>
 				</tbody>
 			</table>
 		</div>
@@ -62,7 +87,7 @@ get_header();
 			<article class="card">
 				<div class="card-meta"><span class="pill pill--teal">Marketing</span></div>
 				<h3>www.pagefeather.dev</h3>
-				<p>This site. b-dosql WordPress on Workers Paid. <code class="inline-code">MEDIA=1</code>. WooCommerce off. Apex redirects here.</p>
+				<p>This site. A Cloudflare Worker running b-dosql WordPress on Workers Paid. Deployed with <code class="inline-code">deploy/deploy.sh</code>. <code class="inline-code">MEDIA=1</code>. WooCommerce off. Apex redirects here.</p>
 				<a class="card-link" href="/">Home <span aria-hidden="true">→</span></a>
 			</article>
 		</div>
@@ -73,7 +98,7 @@ get_header();
 			<h2>Read the raw ledger</h2>
 			<p>Every plan, date, Wrangler version, command, and result.</p>
 		</div>
-		<a class="btn btn--primary" href="https://github.com/skyphusion-labs/pagefeather/blob/main/docs/results.md" rel="noopener noreferrer">results.md <span class="btn-arrow" aria-hidden="true">→</span></a>
+		<a class="btn btn--primary" href="<?php echo esc_url($gh . '/docs/results.md'); ?>" rel="noopener noreferrer">docs/results.md <span class="btn-arrow" aria-hidden="true">→</span></a>
 	</section>
 </main>
 <?php

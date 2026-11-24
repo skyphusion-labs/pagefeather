@@ -12,7 +12,7 @@ $mark = get_template_directory_uri() . '/assets/img/mark.svg';
 		<img class="hero-mark" src="<?php echo esc_url($mark); ?>" width="96" height="96" alt="Pagefeather">
 		<p class="hero-eyebrow">Skyphusion Labs / open source</p>
 		<h1>WordPress on Cloudflare.<br><em>In your account.</em></h1>
-		<p class="hero-lede">Pagefeather runs WordPress and WooCommerce on Workers. You keep the tokens, the data, and the bill. There is no hosted funnel and no upsell.</p>
+		<p class="hero-lede">Pagefeather runs WordPress and WooCommerce on Cloudflare Workers. You keep the tokens, the data, and the bill. There is no hosted funnel and no upsell.</p>
 		<div class="hero-actions">
 			<a class="btn btn--primary" href="/get-started/">Get started <span class="btn-arrow" aria-hidden="true">→</span></a>
 			<a class="btn btn--ghost" href="/limits/">Read the limits</a>
@@ -115,8 +115,9 @@ $mark = get_template_directory_uri() . '/assets/img/mark.svg';
 	<section class="reveal">
 		<div class="section-head">
 			<p class="section-eyebrow">This site</p>
-			<h2>A live b-dosql deploy</h2>
-			<p class="section-intro"><code class="inline-code">www.pagefeather.dev</code> is itself WordPress on Workers Paid with the built-in database. Apex <code class="inline-code">pagefeather.dev</code> redirects here. Media is in R2. WooCommerce is off.</p>
+			<h2>A live Worker, not a VPS</h2>
+			<p class="section-intro">If you come from LAMP or cPanel: this site is not a virtual machine and not a shared host panel. It is WordPress on a Cloudflare Worker. The layout and bindings live in config you deploy with <code class="inline-code">deploy/deploy.sh</code> (Terraform plus Wrangler). That is infrastructure as code. Your Cloudflare account owns the Worker.</p>
+			<p class="section-intro" style="margin-top:0.75rem;"><code class="inline-code">www.pagefeather.dev</code> uses the built-in database path (b-dosql) on Workers Paid. Apex <code class="inline-code">pagefeather.dev</code> redirects here. Media is in R2. WooCommerce is off.</p>
 		</div>
 		<figure class="figure">
 			<svg class="arch-svg" viewBox="0 0 980 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Architecture sketch: visitor to edge cache to Durable Object with SQLite, media in R2">
@@ -142,7 +143,7 @@ $mark = get_template_directory_uri() . '/assets/img/mark.svg';
 				<rect x="820" y="90" width="120" height="70" rx="10" fill="#111827" stroke="#fbbf24" stroke-opacity="0.5"/>
 				<text x="880" y="130" text-anchor="middle" fill="#fbbf24" font-family="JetBrains Mono, monospace" font-size="12">R2 MEDIA</text>
 			</svg>
-			<figcaption>b-dosql sketch · this marketing site’s path</figcaption>
+			<figcaption>b-dosql sketch -- this marketing site's path</figcaption>
 		</figure>
 	</section>
 

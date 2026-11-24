@@ -2,11 +2,16 @@
 
 The marketing theme for [www.pagefeather.dev](https://www.pagefeather.dev/).
 
-It follows the Skyphusion Labs OSS marketing bar (dark navy, Instrument Serif, DM Sans, JetBrains Mono). The accent is teal to amber so Pagefeather reads as its own product next to Vivijure and skyphusion.org.
+It follows the Skyphusion Labs OSS marketing bar (dark navy, Instrument Serif, DM Sans, JetBrains Mono). The accent is teal to amber so Pagefeather reads as its own product next to vivijure and skyphusion.org.
+
+## Branding
+
+The product mark is [assets/logo.svg](assets/logo.svg). The README at the repository root uses that file. The theme hero loads a copy at `wp-content/themes/pagefeather-site/assets/img/mark.svg` (same artwork).
 
 ## Layout
 
 ```
+site/assets/logo.svg
 site/wp-content/themes/pagefeather-site/
 ```
 
