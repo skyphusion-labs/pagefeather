@@ -1,6 +1,6 @@
 # deploy/wfp: WordPress sites on Workers for Platforms
 
-A reference deployment for one operator with a couple of sites on their own Workers for Platforms account (issue #35). Each site is a `b-dosql` WordPress (PHP and its SQLite database in one Durable Object) as a user Worker in a dispatch namespace. Every resource comes from this directory. Terraform makes the data plane. The Workers are uploaded from the Wrangler configs that `lib.sh` renders from the templates here.
+A reference deployment for one operator with a couple of sites on their own Workers for Platforms account (issue #35). Each site is a `b-dosql` WordPress (PHP and its SQLite database in one Durable Object) as a user Worker in a dispatch namespace. Every resource comes from this directory. Terraform makes the data plane. The Workers are uploaded from the Wrangler configs that `lib.sh` `render_user` builds. For b-dosql, that call is thin: `deploy/provision/wrangler-toml.mjs` emits the TOML (#328 PR 2).
 
 The design is on issue #35 (the slice 1 comment): one origin per site, never a path prefix. The capability findings are in `docs/wfp.md`.
 
@@ -227,7 +227,7 @@ The only interruption is the cold boot of the next request after the new code lo
 
 ### When an update uploads (#421)
 
-`site update` records a config hash in the site map entry, next to the build id. The hash is the sha256 of the rendered user config (`render_user` in `lib.sh`) and of the sorted key names in the secrets JSON. A secret value is not part of the hash. The command does not print a secret value.
+`site update` records a config hash in the site map entry, next to the build id. The hash is the sha256 of the rendered user config (`render_user`, which calls `wranglerToml` for b-dosql) and of the sorted key names in the secrets JSON. A secret value is not part of the hash. The command does not print a secret value.
 
 The command uploads for any of these reasons, and it prints the reason:
 

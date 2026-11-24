@@ -793,6 +793,7 @@ jobs:
           node deploy/provision/tests/a-cache-inputs-test.mjs
           node deploy/provision/tests/wp-site-config-test.mjs
           node deploy/provision/tests/site-names-test.mjs
+          node deploy/provision/tests/wrangler-toml-test.mjs
           node deploy/provision/tests/descriptor-table-test.mjs
           node deploy/provision/tests/a-site-config-test.mjs
           node deploy/provision/tests/hyperdrive-gate-test.mjs
