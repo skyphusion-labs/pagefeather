@@ -120,14 +120,14 @@ deletes, and that it cannot be undone: [Remove a site](docs/guide/start-here.md#
 
 ### Many sites on one account (`deploy/wfp`)
 
-> **We have not yet run this end to end from a fresh clone.** The commands below are the
-> `deploy/wfp` flow in [docs/guide/operator.md](docs/guide/operator.md), the same flow the isolation proofs
-> use. A measured run of `site add` and `site remove` from a fresh clone is next. If you try it
-> first and something breaks, please open an issue; it helps us a lot. `deploy/wfp/site` is the
-> one operator surface of this deployment
-> ([#294](https://github.com/skyphusion-labs/pagefeather/issues/294)).
-> `deploy/provision/cli.mjs` is for a site on a Cloudflare for SaaS zone only: without
-> `WFP_SAAS_ZONE_ID` it refuses before any API call and names `deploy/wfp/site`.
+The commands below are the `deploy/wfp` flow in
+[docs/guide/operator.md](docs/guide/operator.md). The isolation proofs use the same flow.
+We measured `site add` and `site remove` from a fresh clone of `origin/main`
+([evidence](docs/results.md), the 2026-11-24 fresh-clone rows).
+`deploy/wfp/site` is the one operator surface of this deployment
+([#294](https://github.com/skyphusion-labs/pagefeather/issues/294)).
+`deploy/provision/cli.mjs` is for a site on a Cloudflare for SaaS zone only.
+Without `WFP_SAAS_ZONE_ID` it refuses before any API call and names `deploy/wfp/site`.
 
 You need a Cloudflare account on the **Workers for Platforms Paid** plan, an API token and the tools
 listed in [docs/guide/operator.md](docs/guide/operator.md) ("What you need": Node, Wrangler 4.107.0 or later,
