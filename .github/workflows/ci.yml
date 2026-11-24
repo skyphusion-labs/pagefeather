@@ -676,6 +676,8 @@ jobs:
         run: node spikes/c1-woo-container/tests/timeout-test.mjs
       - name: "c1 refuses the upload folders a stock web server denies, with b2's rule"
         run: node --test spikes/c1-woo-container/tests/upload-scope-c1.test.mjs
+      - name: c1 strips the operator headers before the container, as b2 does (#1432)
+        run: node --test spikes/c1-woo-container/tests/operator-headers-c1.test.mjs
       - name: c1 deploy check tests
         # deploy/variants/c1.sh c1_check (issue #99) against a fake site: an old container first, a stuck PHP.
         run: deploy/variants/tests/c1-check-test.sh
