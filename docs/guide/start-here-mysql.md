@@ -24,7 +24,7 @@ We use two names, as on [Start here](start-here.md):
 
   To test the connection from your computer, first install a MySQL client (on Ubuntu: `sudo apt-get install -y mysql-client`; on macOS: `brew install mysql-client`, then follow brew's note to add it to your PATH). Then run `mysql --ssl-mode=REQUIRED -h <host> -u <user> -p <database>` and type the password. If it does not connect, your server may also need to allow your computer's IP address for this test. Cloudflare's IP ranges alone are enough for the site.
 
-  No server yet? Choose a provider in the [onboarding guide](onboarding.md). Or `MYSQL=vultr` makes one: it needs a Vultr API key and a domain on Cloudflare, costs $10 a month billed by the hour while it exists, and the site's removal must remove it too. We did not run that path for this page ([full reference](../../deploy/README.md#variant-a-php-in-the-worker-mysql-through-hyperdrive-workers-paid)).
+  No server yet? Choose a managed provider in the [onboarding guide](onboarding.md). Prefer Azure Database for MySQL or PlanetScale. Both are measured for approach A ([evidence](../approach-a-overview.md#choose-a-database-provider)).
 
 ### Step 1: set up Cloudflare (in your browser)
 
