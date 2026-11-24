@@ -106,6 +106,11 @@ cp php/cf-images-editor.php "$wp/wp-content/mu-plugins/r2-uploads/"
 # IMPORT_MU_PLUGINS: the existing site's own mu-plugins, by name, after the
 # build's (so a name the build has is refused, never replaced). content.sh --mu.
 [ -z "${IMPORT_CONTENT:-}" ] || [ -z "${IMPORT_MU_PLUGINS:-}" ] || ../../deploy/import/content.sh --mu "$IMPORT_CONTENT" "$wp/wp-content"
+# #1427: a conformance throwaway's marker can arrive from IMPORT_CONTENT as an
+# older copy. CONFORMANCE=on installs the tree's file over that copy.
+# shellcheck source=../../deploy/conformance.sh
+. ../../deploy/conformance.sh
+conformance_marker_install "$wp/wp-content"
 # Object cache across requests (php/object-cache.php + object-cache-js.php). The
 # drop-in is engine-agnostic: it stays inert unless index.js defines
 # JS_OBJECT_CACHE, which it does for b-dosql (DB_IN_DO=on) and for approach A
