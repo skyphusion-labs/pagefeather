@@ -18,10 +18,14 @@ check "pin names the R2 fixture key" "$(grep -c 'sample-store/20261112-e84daed3e
 check "loader still refuses a bad pin before import" "$(grep -c 'sha256.*nothing loaded' "$LOADER")" 1
 check "loader documents the Store API product gate" "$(grep -c 'published products (Store API x-wp-total)' "$LOADER")" 1
 check "loader branches on kind a for /_sqlimport counts" "$(grep -c '_sqlimport?counts=1' "$LOADER" | awk '{print ($1>=1)?1:0}')" 1
-check "loader skips kind a password replace with a loud line" "$(grep -c 'admin password replace SKIPPED' "$LOADER")" 1
+check "loader replaces kind a admin password via /_sqlimport UPDATE" "$(grep -c 'admin password replaced (kind a /_sqlimport' "$LOADER")" 1
+check "loader fails loud when kind a password update fails" "$(grep -c 'dump admin password may remain' "$LOADER")" 1
+check "loader no longer skips kind a password replace" "$(grep -c 'admin password replace SKIPPED' "$LOADER")" 0
 check "site import sets VARIANT=a for kind a" "$(awk '/^import_one\(\)/,/^}/' "$SITE" | grep -c 'IMP_VARIANT=a')" 1
 check "site import refuses SQLITE on kind a" "$(awk '/^import_one\(\)/,/^}/' "$SITE" | grep -c 'not SQLITE')" 1
 check "kind_a_refuse no longer claims import is refused" "$(grep -c 'site import is allowed for kind a' "$ROOT/deploy/wfp/kind-a.sh")" 1
+check "sql-import allows the admin password UPDATE" "$(grep -c 'Sample-store admin password only' "$ROOT/spikes/b2-wordpress/sql-import.js")" 1
+check "site update local -x keeps DEMO_LOCK" "$(sed -n '/^  local -x PHP_INI=/p' "$SITE" | grep -c 'DEMO_LOCK=')" 1
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/sample-store-a-path.XXXXXX")
 trap 'rm -rf "$T"' EXIT

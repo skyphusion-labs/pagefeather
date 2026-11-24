@@ -103,7 +103,10 @@ test('the demo store notice returns first unless PAGEFEATHER_DEMO_STORE is true'
 	const php = readFileSync(new URL('../php/demo-store-notice.php', import.meta.url), 'utf8');
 	const guard = php.indexOf("if ( ! defined( 'PAGEFEATHER_DEMO_STORE' ) || true !== PAGEFEATHER_DEMO_STORE ) {");
 	assert.ok(guard >= 0, 'no constant guard');
-	assert.ok(guard < php.indexOf('add_action('), 'the guard must come before add_action');
+	assert.ok(guard < php.indexOf('add_filter('), 'the guard must come before add_filter');
 	assert.ok(php.includes('This is a demo store of the Pagefeather framework.'), 'missing STE demo line');
 	assert.ok(!/sign up|pricing|buy now|subscribe/i.test(php), 'demo copy must not funnel or upsell');
+	assert.equal((php.match(/add_filter\(\s*'the_content'/g) || []).length, 1, 'the_content once');
+	assert.equal((php.match(/add_action\(\s*'wp_body_open'/g) || []).length, 0, 'no wp_body_open twin');
+	assert.match(php, /is_singular\(\)/, 'is_singular keeps a posts home from repeating the notice');
 });

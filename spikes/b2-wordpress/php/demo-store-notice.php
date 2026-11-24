@@ -4,7 +4,7 @@
  * Description: On a DEMO_LOCK site, the home page says this is a Pagefeather demo store (#catalog gate).
  *
  * Inert unless PAGEFEATHER_DEMO_STORE is true (site-lock.mjs when DEMO_LOCK=on). Plain STE copy.
- * No signup link and no upsell.
+ * No signup link and no upsell. Prints once on the front page only (the_content; not wp_body_open).
  */
 
 if ( ! defined( 'PAGEFEATHER_DEMO_STORE' ) || true !== PAGEFEATHER_DEMO_STORE ) {
@@ -46,31 +46,21 @@ add_filter(
 	}
 );
 
-add_action(
-	'wp_body_open',
-	static function () {
-		if ( ! is_front_page() ) {
-			return;
-		}
-		echo '<aside class="pagefeather-demo-store" role="note">';
-		echo pagefeather_demo_store_html();
-		echo '</aside>';
-	}
-);
-
+// Once only: the main front-page content. is_singular() keeps a posts home from
+// repeating the block on every loop post. No wp_body_open twin.
 add_filter(
 	'the_content',
 	static function ( $content ) {
-		if ( ! is_front_page() || ! in_the_loop() || ! is_main_query() ) {
+		if ( ! is_front_page() || ! is_singular() || ! in_the_loop() || ! is_main_query() ) {
 			return $content;
 		}
-		$marker = 'pagefeather-demo-store-body';
+		$marker = 'pagefeather-demo-store';
 		if ( is_string( $content ) && false !== strpos( $content, $marker ) ) {
 			return $content;
 		}
-		$block  = '<div class="' . esc_attr( $marker ) . '">';
+		$block  = '<aside class="' . esc_attr( $marker ) . '" role="note">';
 		$block .= pagefeather_demo_store_html();
-		$block .= '</div>';
+		$block .= '</aside>';
 		return $block . $content;
 	},
 	5

@@ -144,6 +144,25 @@ test('with PHP_IN_DO=on, /_sqlimport reaches the PhpRuntime object and not the 4
 	assert.equal(load.o.dropped, 2);
 	assert.equal(load.o.statements, 1);
 
+	// Sample-store admin password replace (#1470): one narrow UPDATE on the site users table.
+	const pw = await call(
+		fakeDb(),
+		'POST',
+		'/_sqlimport',
+		line("UPDATE `wp_users` SET `user_pass` = '$wp$2y$10$abcdefghijklmnopqrstuv', `user_activation_key` = '' WHERE `ID` = 1"),
+	);
+	assert.equal(pw.status, 200, pw.text);
+	assert.equal(pw.o.ok, true);
+	assert.equal(pw.o.statements, 1);
+	const badPw = await call(
+		fakeDb(),
+		'POST',
+		'/_sqlimport',
+		line("UPDATE `wp_options` SET `option_value` = 'x' WHERE `option_name` = 'siteurl'"),
+	);
+	assert.equal(badPw.status, 400, badPw.text);
+	assert.match(badPw.o.error || '', /refused/);
+
 	// The spike token and the prefix rule stay in sqlImport, on this path too.
 	const denied = await call(fakeDb(), 'GET', '/_sqlimport?info=1', undefined, env, 'nope');
 	assert.equal(denied.status, 403);
