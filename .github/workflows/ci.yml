@@ -159,6 +159,8 @@ jobs:
         # php/r2-uploads.php: the uploads root is a directory when the bucket is empty,
         # so wp_mkdir_p chmod()s the r2 stream and not a plain path that does not exist.
         run: php spikes/b2-wordpress/tests/upload-month-json-test.php
+      - name: R2 bridge per-call trace is operator-only and keeps no file names (#1424)
+        run: php spikes/b2-wordpress/tests/r2-trace-test.php
       - name: "A downloadable product file stored in R2 opens through WooCommerce's force download"
         run: php spikes/b2-wordpress/tests/wc-download-path-test.php
       - name: A deleted upload frees its reserved file name (#946)
@@ -294,6 +296,7 @@ jobs:
         run: |
           node --test spikes/b2-wordpress/tests/mem-trace.test.mjs
           node --test spikes/b2-wordpress/tests/operator-headers.test.mjs
+          node --test spikes/b2-wordpress/tests/r2-trace.test.mjs
           node --test spikes/b2-wordpress/tests/upload-scope.test.mjs
           node --test spikes/b2-wordpress/tests/conformance-reset-gate.test.mjs
           python3 -I tests/wfp/admin-mem-test.py

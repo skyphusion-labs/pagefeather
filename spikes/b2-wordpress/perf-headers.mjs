@@ -24,6 +24,8 @@ export const PERF_HEADERS = [
 	'x-boot',
 	'x-boot-origin',
 	'x-mem-trace',
+	// #1424: the per-call R2 bridge trace (op, key shape, ms, PHP callers). Operator-only.
+	'x-r2-trace',
 	// PHP WebAssembly heap, in MiB. A visitor must not see how close the runtime is to the cap (#1271).
 	'x-wasm-mib',
 ];

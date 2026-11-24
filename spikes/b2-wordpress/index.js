@@ -405,6 +405,8 @@ async function runSiteWpCli(argv, ctl, origin) {
 // The admin memory trace of the request now running (#434, php/mem-trace.php): set by the
 // memTrace message at PHP shutdown, read once into the operator-only x-mem-trace header.
 let lastMemTrace = null;
+// #1424: the per-call R2 bridge trace of the request now running (php/r2-uploads.php), same life as lastMemTrace.
+let lastR2Trace = null;
 // The operator's per-request id (#434): x-perf-id, logged on the memory marks and on the reset
 // lines, so a request killed by an isolate reset can be joined to its marks. Operator requests
 // only (a valid spike token), and only a short safe token, so a visitor cannot write into logs.
@@ -1739,6 +1741,7 @@ async function handleMessage(raw) {
 	if (m.mailDead) return JSON.stringify(await mailDeadForHealth(ENV)); // #1057: Site Health
 	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
 	if (m.memTrace) { lastMemTrace = m.memTrace; return '1'; }
+	if (m.r2Trace) { lastR2Trace = m.r2Trace; return '1'; }
 	// #471: the job a cron leg is about to run (sent BEFORE it runs), and PHP's own fatal error. Logged
 	// at once, so a leg the isolate kills still says what it was doing; also kept in the run record.
 	if (m.cronMark) {
@@ -5251,6 +5254,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			// cache: the .bin files written during the request (opcachePlain, stats.opRewrites).
 			const wantOpcache = booted || (spikeOk && req.headers.get('x-perf-opcache') === '1');
 			const op0 = wantOpcache ? opcacheMark(await opcacheStats(php), php) : null;
+			lastR2Trace = null; // #1424: this request's R2 trace only
 			const tPhp = Date.now();
 			// #1039: approach A marks each R2 key this request creates. Armed here, after the early returns, so a
 			// probe or /_install does not leave markers it never clears.
@@ -5433,6 +5437,8 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			out.set('x-boot', booted ? '1' : '0');
 			if (spikeOk && lastMemTrace) out.set('x-mem-trace', JSON.stringify(lastMemTrace).slice(0, 7900));
 			lastMemTrace = null;
+			if (spikeOk && lastR2Trace) out.set('x-r2-trace', JSON.stringify(lastR2Trace).slice(0, 7900));
+			lastR2Trace = null;
 			if (ctx && ctx.inObject) out.set('x-boot-origin', bootOrigin);
 			// The path only, never the query string: a store's URLs carry order keys and logins there.
 			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls, ...callTag(ctx) }));

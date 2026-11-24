@@ -50,9 +50,108 @@ class R2_Uploads_Stream {
 	 */
 	private static $heads = array();
 
+	/** File types whose extension may appear in a trace key shape. Anything else after the last dot is a name. */
+	const TRACE_EXT = 'jpe?g|png|gif|webp|avif|heic|bmp|tiff?|svg|ico|pdf|zip|json|xml|txt|csv|mp3|mp4|m4a|wav|ogg|webm|mov|docx?|xlsx?|pptx?|css|js|html?|php';
+
+	/**
+	 * #1424 trace of this request's bridge calls. Operator-only. What it carries: the op, a key SHAPE (file names, dates
+	 * and directory names replaced by placeholders), ms, a repeat count, and up to 5 callers per call as
+	 * Class::function@file-base-name.php:line. Callers name the plugin or theme class, function and file base name that
+	 * made the call (never arguments or paths), so a trace tells which plugin touches R2. It is returned only in
+	 * x-r2-trace with a valid spike token and is never logged. Only with the operator header (index.js passes it only with the spike token). */
+	private static $trace        = array();
+	private static $trace_seen   = array();
+	private static $trace_cached = 0;
+	private static $trace_total  = 0;
+	private static $trace_armed  = false;
+
+	public static function tracing() {
+		return ! empty( $_SERVER['HTTP_X_PF_R2_TRACE'] ) && function_exists( 'post_message_to_js' );
+	}
+
+	/** A key with its file names and dates replaced by placeholders: the layout, never the name. */
+	public static function key_shape( $key ) {
+		$key   = (string) $key;
+		$trail = '/' === substr( $key, -1 ) ? '/' : '';
+		$parts = explode( '/', trim( $key, '/' ) );
+		$last  = count( $parts ) - 1;
+		$out   = array();
+		foreach ( $parts as $i => $p ) {
+			if ( 0 === $i && 'uploads' === $p ) {
+				$out[] = $p;
+			} elseif ( preg_match( '/^\d{4}$/', $p ) ) {
+				$out[] = '<yyyy>';
+			} elseif ( preg_match( '/^\d{2}$/', $p ) ) {
+				$out[] = '<mm>';
+			} elseif ( $i === $last && '' === $trail ) {
+				// Only a known file type stays: "report.2026" or "john.smith" end in a name, not an extension.
+				$ext   = ( preg_match( '/\.(' . self::TRACE_EXT . ')$/i', $p, $m ) ) ? '.' . strtolower( $m[1] ) : '';
+				$size  = ( '' !== $ext && preg_match( '/-\d+x\d+\.(' . self::TRACE_EXT . ')$/i', $p ) ) ? '-<w>x<h>' : '';
+				$out[] = '<file>' . $size . $ext;
+			} else {
+				$out[] = '<dir>';
+			}
+		}
+		return implode( '/', $out ) . $trail;
+	}
+
+	private static function trace_record( array $op, $ms ) {
+		$k = '';
+		if ( isset( $op['key'] ) ) {
+			$k = self::key_shape( $op['key'] );
+		} elseif ( isset( $op['prefix'] ) ) {
+			$k = self::key_shape( $op['prefix'] );
+		} elseif ( isset( $op['from'] ) ) {
+			$k = self::key_shape( $op['from'] ) . '>' . self::key_shape( isset( $op['to'] ) ? $op['to'] : '' );
+		} elseif ( isset( $op['jobs'] ) && is_array( $op['jobs'] ) ) {
+			$k = 'jobs:' . count( $op['jobs'] );
+		}
+		$raw = $op['op'] . '|' . ( isset( $op['key'] ) ? $op['key'] : ( isset( $op['prefix'] ) ? $op['prefix'] : ( isset( $op['from'] ) ? $op['from'] . '>' . ( isset( $op['to'] ) ? $op['to'] : '' ) : '' ) ) );
+		$d   = isset( self::$trace_seen[ $raw ] ) ? self::$trace_seen[ $raw ] : 0;
+		self::$trace_seen[ $raw ] = $d + 1;
+		$callers = array();
+		foreach ( debug_backtrace( DEBUG_BACKTRACE_IGNORE_ARGS, 14 ) as $f ) {
+			if ( isset( $f['class'] ) && __CLASS__ === $f['class'] && in_array( $f['function'], array( 'call', 'trace_record' ), true ) ) {
+				continue;
+			}
+			$fn = ( isset( $f['class'] ) ? $f['class'] . '::' : '' ) . ( isset( $f['function'] ) ? $f['function'] : '?' );
+			$callers[] = $fn . ( isset( $f['file'] ) ? '@' . basename( $f['file'] ) . ':' . ( isset( $f['line'] ) ? $f['line'] : 0 ) : '' );
+			if ( count( $callers ) >= 5 ) {
+				break;
+			}
+		}
+		++self::$trace_total;
+		self::$trace[] = array( 'o' => $op['op'], 'k' => $k, 'ms' => round( $ms, 1 ), 'd' => $d, 'c' => $callers );
+		if ( ! self::$trace_armed ) {
+			self::$trace_armed = true;
+			register_shutdown_function( array( __CLASS__, 'trace_flush' ) );
+		}
+	}
+
+	/** Send the trace once, to the Worker's operator-only x-r2-trace header. Entries drop from the end to fit the header. */
+	public static function trace_flush() {
+		if ( ! self::tracing() || ! self::$trace ) {
+			return;
+		}
+		$calls = self::$trace;
+		do {
+			$t = array( 'v' => 1, 'n' => self::$trace_total, 'cached' => self::$trace_cached, 'calls' => $calls );
+			$j = json_encode( $t );
+			if ( strlen( $j ) < 7800 || ! $calls ) {
+				break;
+			}
+			array_pop( $calls );
+		} while ( true );
+		self::$trace = array();
+		post_message_to_js( json_encode( array( 'r2Trace' => $t ) ) );
+	}
+
 	/** Send one operation to the Worker. Returns the reply, or null on error. */
 	public static function call( array $op ) {
 		if ( 'head' === $op['op'] && isset( self::$heads[ $op['key'] ] ) ) {
+			if ( self::tracing() ) {
+				++self::$trace_cached;
+			}
 			return self::$heads[ $op['key'] ];
 		}
 		foreach ( array( 'key', 'to', 'from', 'dest' ) as $k ) {
@@ -65,7 +164,11 @@ class R2_Uploads_Stream {
 				unset( self::$heads[ $j['dest'] ] );
 			}
 		}
+		$t0    = microtime( true );
 		$reply = json_decode( skyphusion_worker_call( json_encode( array( 'r2' => $op ) ) ), true );
+		if ( self::tracing() ) {
+			self::trace_record( $op, ( microtime( true ) - $t0 ) * 1000 );
+		}
 		$reply = ( is_array( $reply ) && ! empty( $reply['ok'] ) ) ? $reply : null;
 		if ( 'head' === $op['op'] && $reply ) {
 			self::$heads[ $op['key'] ] = $reply;
