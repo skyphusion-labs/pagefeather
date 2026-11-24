@@ -27,10 +27,14 @@ export const RESERVED_NAMES = new Set([
   'autoconfig', 'cpanel', 'whm', 'localhost', 'internal', 'dispatch',
   'dispatcher', 'outbound', 'wp', 'wfp', 'woo', 'shop', 'site', 'c1',
   'studio', 'demo', 'staging', 'prod', 'production', 'test', 'default',
+  // #328 PR 1: union with deploy/wfp/lib.sh SHARED_WORKER_SITE_NAMES + RESERVED_SITE_NAMES.
+  // No rule loosened. A site named probe/auto would collide with shared Workers or snapshot paths.
+  'probe', 'cacheprobe', 'cacheprobe-direct', 'auto',
 ]);
 // Structural prefixes: a name beginning with one of these would collide with the
 // project's own derived script or bucket names (site-<s>, c1-<s>, wp-wfp-<s>-media).
-export const RESERVED_PREFIXES = ['site-', 'c1-', 'wp-wfp-', 'wp-woo-'];
+// wfp- matches lib.sh valid_site (any wfp-* name).
+export const RESERVED_PREFIXES = ['site-', 'c1-', 'wp-wfp-', 'wp-woo-', 'wfp-'];
 
 export function isReservedName(name) {
   if (typeof name !== 'string') return false;
