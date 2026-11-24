@@ -200,12 +200,15 @@ test('#721 wiring: the object hands its request.signal to the lock, refuses a re
 	assert.ok(/const gone = !!\(callerSignal && callerSignal\.aborted\);/.test(obj) && refuse > 0 && refuse < obj.indexOf('if (armsCron) {'), 'a request already gone is refused in the one arrival refusal, before the origin write');
 	assert.ok(/why: gone \? 'disconnect' : 'start-by'/.test(obj), 'and says why');
 	const root = new URL('../../../', import.meta.url);
-	const files = ['spikes/b2-wordpress/wrangler.toml', 'deploy/render-conf.sh', 'deploy/wfp/lib.sh', 'deploy/provision/server-config.mjs', 'deploy/provision/cli.mjs', 'deploy/release/build-bundle.sh'];
+	// #328 PR 2: b-dosql flags come from wranglerToml; lib.sh is a thin call into it.
+	const files = ['spikes/b2-wordpress/wrangler.toml', 'deploy/render-conf.sh', 'deploy/provision/wrangler-toml.mjs', 'deploy/provision/server-config.mjs', 'deploy/provision/cli.mjs', 'deploy/release/build-bundle.sh'];
 	for (const f of files) {
 		const t = readFileSync(new URL(f, root), 'utf8');
 		assert.ok(/["']nodejs_compat["'], ?["']enable_request_signal["']/.test(t), f + ' sets enable_request_signal');
 		assert.ok(!/compatibility_date = "2026-11|compatibilityDate: ['"]2026-11/.test(t), f + ': the specific flag, never a date bump');
 	}
+	const lib = readFileSync(new URL('deploy/wfp/lib.sh', root), 'utf8');
+	assert.ok(/wrangler-toml\.mjs/.test(lib), 'deploy/wfp/lib.sh still calls wranglerToml');
 });
 
 test('#721 audit: a caller gone mid-call gets a quiet 499 that is never stored and says what may have been written', { timeout: 3000 }, async () => {
