@@ -50,6 +50,27 @@ class R2_Uploads_Stream {
 	 */
 	private static $heads = array();
 
+	/**
+	 * This request's stat map. A positive file or directory may answer url_stat.
+	 * An absent mark may answer only after this request deletes or moves the key.
+	 * A list does not write absent marks. A missing direct child is absent only while
+	 * that list's truncated value is boolean false.
+	 */
+	private static $stats = array();
+
+	/** List prefix => direct child name => 'file' or 'dir'. Positive names only. */
+	private static $list_children = array();
+
+	/** List prefix => true when that reply's truncated value is boolean false. */
+	private static $list_complete = array();
+
+	/** Bytes from offset 0 for one key. At most METADATA_PREFIX. This request only. */
+	private static $prefix_key = null;
+	private static $prefix_buf = '';
+
+	/** True after this request has registered the shutdown clear. */
+	private static $clear_armed = false;
+
 	/** File types whose extension may appear in a trace key shape. Anything else after the last dot is a name. */
 	const TRACE_EXT = 'jpe?g|png|gif|webp|avif|heic|bmp|tiff?|svg|ico|pdf|zip|json|xml|txt|csv|mp3|mp4|m4a|wav|ogg|webm|mov|docx?|xlsx?|pptx?|css|js|html?|php';
 
@@ -146,9 +167,34 @@ class R2_Uploads_Stream {
 		post_message_to_js( json_encode( array( 'r2Trace' => $t ) ) );
 	}
 
+	/** Register the request-end clear once. The runtime is reused, so the next request must arm it again. */
+	public static function arm_request_clear() {
+		if ( self::$clear_armed ) {
+			return;
+		}
+		self::$clear_armed = true;
+		register_shutdown_function( array( __CLASS__, 'request_clear' ) );
+	}
+
+	/** Drop the stat map, head cache, directory marks, and prefix bytes. The next request must not see them. */
+	public static function request_clear() {
+		self::$heads          = array();
+		self::$dirs           = array();
+		self::$stats          = array();
+		self::$list_children  = array();
+		self::$list_complete  = array();
+		self::$prefix_key     = null;
+		self::$prefix_buf     = '';
+		self::$clear_armed    = false;
+	}
+
 	/** Send one operation to the Worker. Returns the reply, or null on error. */
 	public static function call( array $op ) {
-		if ( 'head' === $op['op'] && isset( self::$heads[ $op['key'] ] ) ) {
+		self::arm_request_clear();
+		// bridge: this head must hit the worker. A cached absent value must not answer it.
+		$bridge = ! empty( $op['bridge'] );
+		unset( $op['bridge'] );
+		if ( ! $bridge && 'head' === $op['op'] && isset( self::$heads[ $op['key'] ] ) ) {
 			if ( self::tracing() ) {
 				++self::$trace_cached;
 			}
@@ -159,10 +205,19 @@ class R2_Uploads_Stream {
 				unset( self::$heads[ $op[ $k ] ] );
 			}
 		}
-		if ( 'images' === $op['op'] ) {
+		if ( 'images' === $op['op'] && isset( $op['jobs'] ) && is_array( $op['jobs'] ) ) {
 			foreach ( $op['jobs'] as $j ) {
-				unset( self::$heads[ $j['dest'] ] );
+				if ( isset( $j['dest'] ) ) {
+					self::drop_written( $j['dest'] );
+				}
 			}
+		}
+		if ( 'put' === $op['op'] || 'delete' === $op['op'] ) {
+			if ( isset( $op['key'] ) ) {
+				self::drop_written( $op['key'] );
+			}
+		} elseif ( 'copy' === $op['op'] && isset( $op['to'] ) ) {
+			self::drop_written( $op['to'] );
 		}
 		$t0    = microtime( true );
 		$reply = json_decode( skyphusion_worker_call( json_encode( array( 'r2' => $op ) ) ), true );
@@ -172,8 +227,186 @@ class R2_Uploads_Stream {
 		$reply = ( is_array( $reply ) && ! empty( $reply['ok'] ) ) ? $reply : null;
 		if ( 'head' === $op['op'] && $reply ) {
 			self::$heads[ $op['key'] ] = $reply;
+			if ( ! empty( $reply['found'] ) ) {
+				self::$stats[ $op['key'] ] = array(
+					't'     => 'file',
+					'size'  => (int) $reply['size'],
+					'mtime' => (int) $reply['mtime'],
+				);
+			}
+		}
+		if ( 'list' === $op['op'] && $reply ) {
+			self::list_fill( isset( $op['prefix'] ) ? (string) $op['prefix'] : '', $reply );
+		}
+		if ( 'delete' === $op['op'] && $reply && isset( $op['key'] ) ) {
+			self::mark_absent( $op['key'], 'delete' );
+		}
+		if ( 'copy' === $op['op'] && $reply && ! empty( $op['move'] ) && ! empty( $reply['found'] ) && isset( $op['from'] ) ) {
+			self::drop_written( $op['from'] );
+			self::mark_absent( $op['from'], 'move' );
 		}
 		return $reply;
+	}
+
+	/** Forget one key after a write. The next stat heads. A parent list no longer proves the name absent. */
+	private static function drop_written( $key ) {
+		$key = (string) $key;
+		unset( self::$heads[ $key ], self::$stats[ $key ], self::$dirs[ $key ] );
+		list( $parent, $name ) = self::split_key( $key );
+		unset( self::$list_complete[ $parent ] );
+		if ( '' !== $name && isset( self::$list_children[ $parent ][ $name ] ) ) {
+			unset( self::$list_children[ $parent ][ $name ] );
+		}
+		if ( self::$prefix_key === $key ) {
+			self::$prefix_key = null;
+			self::$prefix_buf = '';
+		}
+	}
+
+	/** This request removed the key. url_stat may answer absent. A later put drops the mark. */
+	private static function mark_absent( $key, $why ) {
+		self::$stats[ (string) $key ] = array( 't' => 'absent', 'why' => $why );
+	}
+
+	private static function as_prefix( $prefix ) {
+		$prefix = (string) $prefix;
+		if ( '' === $prefix || '/' === substr( $prefix, -1 ) ) {
+			return $prefix;
+		}
+		return $prefix . '/';
+	}
+
+	/** Parent prefix (with a trailing slash, or '') and the final name. */
+	private static function split_key( $key ) {
+		$key = trim( (string) $key, '/' );
+		$pos = strrpos( $key, '/' );
+		if ( false === $pos ) {
+			return array( '', $key );
+		}
+		return array( substr( $key, 0, $pos + 1 ), substr( $key, $pos + 1 ) );
+	}
+
+	/** The direct child name, or null when the key sits deeper than this prefix. */
+	private static function child_of( $prefix, $full ) {
+		$full   = trim( (string) $full, '/' );
+		$prefix = self::as_prefix( $prefix );
+		$base   = trim( $prefix, '/' );
+		if ( '' !== $base && 0 !== strpos( $full, $base . '/' ) ) {
+			return null;
+		}
+		$rest = '' === $base ? $full : substr( $full, strlen( $base ) + 1 );
+		if ( '' === $rest || false !== strpos( $rest, '/' ) ) {
+			return null;
+		}
+		return $rest;
+	}
+
+	private static function mark_dir( $key ) {
+		$key = trim( (string) $key, '/' );
+		if ( '' === $key ) {
+			return;
+		}
+		self::$dirs[ $key ] = true;
+		if ( ! isset( self::$stats[ $key ] ) || 'dir' !== self::$stats[ $key ]['t'] ) {
+			self::$stats[ $key ] = array( 't' => 'dir' );
+		}
+	}
+
+	/** Each directory on the path of a returned key. The harness returns full keys and no prefixes. */
+	private static function mark_path_dirs( $key ) {
+		$key = trim( (string) $key, '/' );
+		if ( '' === $key ) {
+			return;
+		}
+		$parts = explode( '/', $key );
+		array_pop( $parts );
+		$path = '';
+		foreach ( $parts as $p ) {
+			if ( '' === $p ) {
+				continue;
+			}
+			$path = '' === $path ? $p : $path . '/' . $p;
+			self::mark_dir( $path );
+		}
+	}
+
+	/** Store positive names from one list page. Only boolean truncated false may mark other children absent. */
+	private static function list_fill( $prefix, array $reply ) {
+		$prefix = self::as_prefix( $prefix );
+		$keys   = ( isset( $reply['keys'] ) && is_array( $reply['keys'] ) ) ? $reply['keys'] : array();
+		$prefs  = ( isset( $reply['prefixes'] ) && is_array( $reply['prefixes'] ) ) ? $reply['prefixes'] : array();
+		$page   = array();
+		foreach ( $keys as $k ) {
+			$k = (string) $k;
+			self::mark_path_dirs( $k );
+			if ( ! isset( self::$stats[ $k ] ) || 'file' !== self::$stats[ $k ]['t'] ) {
+				self::$stats[ $k ] = array( 't' => 'file', 'size' => 0, 'mtime' => 0 );
+			}
+			$name = self::child_of( $prefix, $k );
+			if ( null !== $name ) {
+				$page[ $name ] = 'file';
+			}
+		}
+		foreach ( $prefs as $p ) {
+			$dir = trim( (string) $p, '/' );
+			self::mark_dir( $dir );
+			self::mark_path_dirs( $dir );
+			$name = self::child_of( $prefix, $dir );
+			if ( null !== $name ) {
+				$page[ $name ] = 'dir';
+			}
+		}
+		$complete = array_key_exists( 'truncated', $reply ) && false === $reply['truncated'];
+		if ( $complete ) {
+			self::$list_children[ $prefix ] = $page;
+			self::$list_complete[ $prefix ] = true;
+			return;
+		}
+		$prev = isset( self::$list_children[ $prefix ] ) ? self::$list_children[ $prefix ] : array();
+		self::$list_children[ $prefix ] = array_merge( $prev, $page );
+		unset( self::$list_complete[ $prefix ] );
+	}
+
+	/**
+	 * A cached stat, or null when this key must head.
+	 * Absent is returned only for a delete, a move, or a missing direct child of a complete list.
+	 */
+	private static function stat_cached( $key ) {
+		if ( isset( self::$stats[ $key ] ) ) {
+			return self::$stats[ $key ];
+		}
+		list( $parent, $name ) = self::split_key( $key );
+		if ( '' === $name || empty( self::$list_complete[ $parent ] ) ) {
+			return null;
+		}
+		if ( isset( self::$list_children[ $parent ][ $name ] ) ) {
+			if ( 'dir' === self::$list_children[ $parent ][ $name ] ) {
+				return array( 't' => 'dir' );
+			}
+			return array( 't' => 'file', 'size' => 0, 'mtime' => 0 );
+		}
+		return array( 't' => 'absent', 'why' => 'list' );
+	}
+
+	/** Keep a get that continues the prefix from offset 0. A hole is not merged. A failed get is not stored. */
+	private static function prefix_note( $key, $at, $bytes ) {
+		$cap = self::METADATA_PREFIX;
+		if ( null === self::$prefix_key ) {
+			if ( 0 !== (int) $at ) {
+				return;
+			}
+			self::$prefix_key = (string) $key;
+			self::$prefix_buf = substr( $bytes, 0, $cap );
+			return;
+		}
+		if ( self::$prefix_key !== (string) $key ) {
+			return;
+		}
+		$have = strlen( self::$prefix_buf );
+		if ( $have >= $cap || (int) $at !== $have ) {
+			return;
+		}
+		self::$prefix_buf .= substr( $bytes, 0, $cap - $have );
 	}
 
 	public static function key( $uri ) {
@@ -228,7 +461,8 @@ class R2_Uploads_Stream {
 		}
 		$this->buf = fopen( 'php://temp', 'w+b' );
 		if ( 'x' === $m ) {
-			$h = self::call( array( 'op' => 'head', 'key' => $this->key ) );
+			// Exclusive create always heads. A cached absent value must not skip this head.
+			$h = self::call( array( 'op' => 'head', 'key' => $this->key, 'bridge' => true ) );
 			if ( ! $h || $h['found'] ) {
 				return false;
 			}
@@ -253,19 +487,39 @@ class R2_Uploads_Stream {
 		if ( ! $this->lazy ) {
 			return fread( $this->buf, $count );
 		}
-		$out = '';
+		$out         = '';
+		$from_prefix = false;
 		while ( $count > 0 && $this->pos < $this->size ) {
+			// Copy local prefix bytes only for this stream's key. A later request has an empty buffer.
+			if ( self::$prefix_key === $this->key && $this->pos < strlen( self::$prefix_buf ) ) {
+				if ( ! $from_prefix && self::tracing() ) {
+					++self::$trace_cached;
+				}
+				$from_prefix = true;
+				$part        = substr( self::$prefix_buf, $this->pos, $count );
+				if ( '' === $part ) {
+					break;
+				}
+				$out       .= $part;
+				$this->pos += strlen( $part );
+				$count     -= strlen( $part );
+				continue;
+			}
 			$in_chunk = $this->chunk_at >= 0 && $this->pos >= $this->chunk_at && $this->pos < $this->chunk_at + strlen( $this->chunk );
 			if ( ! $in_chunk ) {
 				// The first read is small (headers). A read that goes on gets 1 MB at a time.
-				$at  = $this->pos;
-				$len = $this->chunk_at < 0 ? 65536 : self::CHUNK;
+				// A prefix that already holds the start is not that first read.
+				$at    = $this->pos;
+				$fresh = $this->chunk_at < 0 && ! ( self::$prefix_key === $this->key && '' !== self::$prefix_buf );
+				$len   = $fresh ? 65536 : self::CHUNK;
 				$r   = self::call( array( 'op' => 'get', 'key' => $this->key, 'offset' => $at, 'length' => min( $len, $this->size - $at ) ) );
 				if ( ! $r || ! $r['found'] ) {
 					return $out;
 				}
 				$this->chunk    = base64_decode( $r['body'] );
 				$this->chunk_at = $at;
+				// A hole does not merge. Only a range that continues from offset 0 is kept.
+				self::prefix_note( $this->key, $at, $this->chunk );
 			}
 			$part       = substr( $this->chunk, $this->pos - $this->chunk_at, $count );
 			if ( '' === $part ) {
@@ -371,6 +625,22 @@ class R2_Uploads_Stream {
 		if ( '' === $key || 'uploads' === $key || isset( self::$dirs[ $key ] ) ) {
 			return self::stat_array( true );
 		}
+		$hit = self::stat_cached( $key );
+		if ( is_array( $hit ) ) {
+			if ( self::tracing() ) {
+				++self::$trace_cached;
+			}
+			if ( 'absent' === $hit['t'] ) {
+				if ( ! ( $flags & STREAM_URL_STAT_QUIET ) ) {
+					trigger_error( 'r2 file not found: ' . $key, E_USER_NOTICE );
+				}
+				return false;
+			}
+			if ( 'dir' === $hit['t'] ) {
+				return self::stat_array( true );
+			}
+			return self::stat_array( false, (int) ( $hit['size'] ?? 0 ), (int) ( $hit['mtime'] ?? 0 ) );
+		}
 		$r = self::call( array( 'op' => 'head', 'key' => $key ) );
 		if ( $r && $r['found'] ) {
 			return self::stat_array( false, (int) $r['size'], (int) $r['mtime'] );
@@ -438,6 +708,14 @@ class R2_Uploads_Stream {
 	public function dir_opendir( $uri, $options ) {
 		$prefix = self::key( $uri );
 		$prefix = '' === $prefix ? '' : $prefix . '/';
+		// A later scandir reuses the page only when truncated was boolean false.
+		if ( ! empty( self::$list_complete[ $prefix ] ) ) {
+			if ( self::tracing() ) {
+				++self::$trace_cached;
+			}
+			$this->entries = array_map( 'strval', array_keys( isset( self::$list_children[ $prefix ] ) ? self::$list_children[ $prefix ] : array() ) );
+			return true;
+		}
 		$l      = self::call( array( 'op' => 'list', 'prefix' => $prefix, 'limit' => 1000 ) );
 		if ( ! $l ) {
 			return false;
@@ -471,6 +749,9 @@ class R2_Uploads_Stream {
 }
 
 stream_wrapper_register( 'r2', 'R2_Uploads_Stream', STREAM_IS_URL ) || wp_die( 'r2 stream wrapper: register failed' );
+
+// The runtime serves later requests. Arm the clear on each include. call() arms it again after a clear.
+R2_Uploads_Stream::arm_request_clear();
 
 // Point the uploads directory at R2. URLs stay /wp-content/uploads/...; the Worker serves them.
 add_filter(
@@ -557,7 +838,9 @@ add_filter(
 				// name gave 7 files in 2 of 5 runs of tests/break.py (2026-11-05).
 				// The file must also not exist in R2.
 				global $wpdb;
-				$h = R2_Uploads_Stream::call( array( 'op' => 'head', 'key' => $key ) );
+				// Approach A has no reserve row. This head always hits the bridge.
+				// A cached absent value must not skip it.
+				$h = R2_Uploads_Stream::call( array( 'op' => 'head', 'key' => $key, 'bridge' => true ) );
 				$r = array(
 					'reserved' => ( ! $h || empty( $h['found'] ) )
 						&& 1 === $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO `$wpdb->options` (`option_name`, `option_value`, `autoload`) VALUES (%s, %s, 'off')", R2_Uploads_Stream::reserved_option( $key ), (string) time() ) ),

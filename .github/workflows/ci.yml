@@ -163,6 +163,11 @@ jobs:
         run: php spikes/b2-wordpress/tests/upload-month-json-test.php
       - name: R2 bridge per-call trace is operator-only and keeps no file names (#1424)
         run: php spikes/b2-wordpress/tests/r2-trace-test.php
+      - name: R2 stat cache keeps a real head and a short list (#1424)
+        # php/r2-uploads.php: a cached absent value does not skip the fallback head or mode x.
+        # A list marks a missing name absent only when truncated is boolean false.
+        # The prefix buffer and the stat map clear at request end.
+        run: php spikes/b2-wordpress/tests/r2-stat-cache-test.php
       - name: "A downloadable product file stored in R2 opens through WooCommerce's force download"
         run: php spikes/b2-wordpress/tests/wc-download-path-test.php
       - name: A deleted upload frees its reserved file name (#946)
