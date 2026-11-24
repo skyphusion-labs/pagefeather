@@ -1,3 +1,5 @@
+import { tokensEqual } from './token-equal.mjs';
+
 // Import an existing site's MySQL dump into variant a's database (issue #31,
 // deploy/import.sh, deploy/import/mysql-prepare.py). Variant a only: MySQL
 // (MariaDB, or PlanetScale for a2) through Hyperdrive. The caller passes the
@@ -296,7 +298,7 @@ async function packet(db, env) {
 
 export async function sqlImport(req, env, url, db) {
 	if (!db) return new Response('/_sqlimport is for variant a only (MySQL through Hyperdrive)', { status: 404 });
-	if (!env.SPIKE_TOKEN || req.headers.get('x-spike-token') !== env.SPIKE_TOKEN) return new Response('forbidden', { status: 403 });
+	if (!(await tokensEqual(req.headers.get('x-spike-token'), env.SPIKE_TOKEN))) return new Response('forbidden', { status: 403 });
 	const json = (o, status = 200) => Response.json(o, { status, headers: { 'cache-control': 'private, no-store' } });
 	let prefix;
 	try {

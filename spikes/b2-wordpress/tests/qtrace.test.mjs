@@ -65,7 +65,7 @@ test('createTrace caps what it keeps: top lists, and shapes cut at 200 character
 test('#1090 the qtrace line carries the isolate, and a caller with its asker (up to 240 chars) is kept whole', async () => {
 	const { readFileSync } = await import('node:fs');
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /console\.log\(JSON\.stringify\(\{ m: 'qtrace', \.\.\.memIdOf\(req, env\), iso: ISOLATE_ID, method: req\.method/);
+	assert.match(src, /console\.log\(JSON\.stringify\(\{ m: 'qtrace', \.\.\.\(await memIdOf\(req, env\)\), iso: ISOLATE_ID, method: req\.method/);
 	const t = createTrace();
 	const c = 'core:option.php::get_option <- plugin:woocommerce:Features.php::' + 'X'.repeat(150);
 	t.add('SELECT 1', 1, c);

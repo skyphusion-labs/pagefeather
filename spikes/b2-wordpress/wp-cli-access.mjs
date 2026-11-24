@@ -4,6 +4,8 @@
 // The certs URL is https://<team>.cloudflareaccess.com/cdn-cgi/access/certs.
 // A failed check is not an error the caller can tell from a missing route.
 
+import { tokensEqual } from './token-equal.mjs';
+
 const CERTS_TTL_MS = 3600 * 1000;
 const CERTS_TTL_CAP_MS = 86400 * 1000;
 
@@ -61,20 +63,9 @@ export function devKeysFromEnv(env) {
 	}
 }
 
-// SHA-256 both strings, then compare the digests. The compare does not stop
-// at the first different byte. An empty secret never matches.
+// The shared compare (#1431, token-equal.mjs). An empty secret never matches.
 export async function timingSafeEqualString(a, b) {
-	if (typeof a !== 'string' || typeof b !== 'string' || a.length === 0 || b.length === 0) return false;
-	const enc = new TextEncoder();
-	const [da, db] = await Promise.all([
-		crypto.subtle.digest('SHA-256', enc.encode(a)),
-		crypto.subtle.digest('SHA-256', enc.encode(b)),
-	]);
-	const x = new Uint8Array(da);
-	const y = new Uint8Array(db);
-	let diff = 0;
-	for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
-	return diff === 0;
+	return tokensEqual(a, b);
 }
 
 function b64urlToBytes(s) {

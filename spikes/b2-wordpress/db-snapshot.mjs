@@ -16,6 +16,8 @@
 //   413 too-big      the raw dump passed maxRawBytes: nothing is stored
 //   500 dump-error / dump-empty / readback   nothing usable is stored (a readback failure names it)
 
+import { tokensEqual } from './token-equal.mjs';
+
 export const SNAPSHOT_PATH = '/_dbsnapshot';
 export const SNAPSHOT_HEADER = 'x-snapshot-token';
 export const SNAPSHOT_PREFIX = '_snapshots/auto/';
@@ -26,20 +28,16 @@ export const SNAPSHOT_MAX_RAW_BYTES = 128 * 1024 * 1024;
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-/** Compare two strings in time that depends on their length only. */
-export function sameToken(given, want) {
-	const a = enc.encode(String(given));
-	const b = enc.encode(String(want));
-	let diff = a.length ^ b.length;
-	for (let i = 0; i < b.length; i++) diff |= (a[i] ?? 0) ^ b[i];
-	return b.length > 0 && diff === 0;
+/** Compare two strings with the shared constant-time helper (#1431). */
+export async function sameToken(given, want) {
+	return tokensEqual(String(given), String(want));
 }
 
 /** 'ok', 'forbidden' or 'method'. The token is checked before the method, so a request without the
  * token learns nothing (every such request is 403). */
-export function snapshotGate(req, env) {
+export async function snapshotGate(req, env) {
 	const want = env && env.SNAPSHOT_TOKEN;
-	if (!want || !sameToken(req.headers.get(SNAPSHOT_HEADER) || '', want)) return 'forbidden';
+	if (!want || !(await sameToken(req.headers.get(SNAPSHOT_HEADER) || '', want))) return 'forbidden';
 	if (req.method !== 'POST') return 'method';
 	return 'ok';
 }

@@ -76,6 +76,7 @@ async function loadSqlImport() {
 	const dir = mkdtempSync(join(tmpdir(), 'sqlimport-do-'));
 	const dest = join(dir, 'sql-import.mjs');
 	copyFileSync(new URL('../sql-import.js', import.meta.url), dest);
+	copyFileSync(new URL('../token-equal.mjs', import.meta.url), join(dir, 'token-equal.mjs'));
 	const mod = await import(pathToFileURL(dest).href);
 	rmSync(dir, { recursive: true, force: true });
 	return mod.sqlImport;

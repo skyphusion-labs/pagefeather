@@ -23,7 +23,7 @@ test('x-pf-conformance-reset is removed before PHP runs unless the spike token i
 test('every spikeOk handed to handle() is the token compare', () => {
 	const defs = src.match(/const spikeOk = [^;]+;/g) || [];
 	assert.ok(defs.length >= 2, 'the object path and the worker path');
-	for (const d of defs) assert.equal(d, "const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;");
+	for (const d of defs) assert.equal(d, "const spikeOk = await tokensEqual(req.headers.get('x-spike-token'), env.SPIKE_TOKEN);");
 });
 test('the PHP route needs the header AND the capability, and only the marker registers it', () => {
 	assert.match(marker, /'HTTP_X_PF_CONFORMANCE_RESET'\] \) && '1' === \$_SERVER\['HTTP_X_PF_CONFORMANCE_RESET'\]\s*&& current_user_can\( 'edit_theme_options' \)/);

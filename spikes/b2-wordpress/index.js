@@ -69,6 +69,7 @@ import { isVersionedKey, l1ExpFor } from './oc-l1.mjs';
 import { aPerfLine, r2OpsSnapshot, r2OpsDelta } from './perf-line.mjs';
 import { serveUpload } from './upload-scope.mjs';
 import { stripOperatorHeaders } from './operator-headers.mjs';
+import { tokensEqual } from './token-equal.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
@@ -411,9 +412,9 @@ let lastR2Trace = null;
 // lines, so a request killed by an isolate reset can be joined to its marks. Operator requests
 // only (a valid spike token), and only a short safe token, so a visitor cannot write into logs.
 const MEM_ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;
-function memIdOf(req, env) {
+async function memIdOf(req, env) {
 	const id = req.headers.get('x-perf-id');
-	return id && MEM_ID_RE.test(id) && perfHeadersAllowed(req, env) ? { id } : {};
+	return id && MEM_ID_RE.test(id) && await perfHeadersAllowed(req, env) ? { id } : {};
 }
 // The isolate memory ledger (#394, mem-ledger.mjs): off unless MEM_LEDGER=on or an operator request
 // sends x-mem-ledger: 1. ledgerActive is set per request (and per cron leg), ledgerId is its x-perf-id.
@@ -3741,7 +3742,7 @@ export class PhpRuntime extends DurableObject {
 				now: Date.now(),
 				method: raw.method,
 				wakeHeader: raw.headers.get(CRON_WAKE_HEADER),
-				spikeOk: Boolean(env.SPIKE_TOKEN) && raw.headers.get('x-spike-token') === env.SPIKE_TOKEN,
+				spikeOk: await tokensEqual(raw.headers.get('x-spike-token'), env.SPIKE_TOKEN),
 			});
 			if (woke.status !== 200) return new Response('forbidden', { status: woke.status });
 			if (woke.body && woke.body.pulled) console.log(JSON.stringify({ m: 'alarm', pulledBy: 'cron-wake', was: woke.body.was }));
@@ -3842,7 +3843,7 @@ export class PhpRuntime extends DurableObject {
 		// The scheduled snapshot (#533, db-snapshot.mjs): its own key, SNAPSHOT_TOKEN, never SPIKE_TOKEN.
 		// Checked here again, like the spike token: the object trusts nothing it did not check itself.
 		if (url.pathname === SNAPSHOT_PATH) {
-			const gate = snapshotGate(req, env);
+			const gate = await snapshotGate(req, env);
 			if (gate !== 'ok') return gateResponse(gate);
 			// #841: re-arm the cron alarm FIRST (only a re-arm; no cron runs here). This call reaches every object daily,
 			// even a fully edge-cached site's, where no request re-arms a deleted alarm. Its state goes in the snapshot.
@@ -3855,7 +3856,7 @@ export class PhpRuntime extends DurableObject {
 			console.log('@event snapshot ' + JSON.stringify(r.body));
 			return Response.json(r.body, { status: r.status, headers: { 'cache-control': 'private, no-store' } });
 		}
-		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
+		const spikeOk = await tokensEqual(req.headers.get('x-spike-token'), env.SPIKE_TOKEN);
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		// MySQL import (#31, #551). The front Worker forwards here when PHP_IN_DO=on,
 		// because this isolate holds the MySQL client (index-a-lean.js). No client
@@ -4318,7 +4319,7 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 	const hint = target ? target.hint : env.PHP_LOCATION;
 	// #352: /_frame is the Worker's own probe of the object. A client gets 404; a spike-token holder gets the
 	// frame of ?id= (the proof reads it; the request id is in the x-pf-req response header).
-	const frameSpikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
+	const frameSpikeOk = await tokensEqual(req.headers.get('x-spike-token'), env.SPIKE_TOKEN);
 	if (url.pathname === '/_frame' && frameSpikeOk) return Response.json({ frame: await frameProbe(env, name, url.searchParams.get('id') || '') }, { headers: { 'cache-control': 'no-store' } });
 	if (url.pathname === '/_frame') return new Response('Not Found', { status: 404 });
 	// #352: one id per client request (a retry keeps it), so the probe can ask for this request's frame.
@@ -4374,7 +4375,7 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 			});
 		},
 		req.method,
-		(e, a) => console.log(JSON.stringify({ m: isObjectCallDeadline(e) ? 'object-deadline-retry' : 'isolate-reset-retry', attempt: a, kind: classifyObjectError(e) || (isObjectCallDeadline(e) ? 'no-answer' : null), path: url.pathname, deadlineMs: e.deadlineMs || null, ...memIdOf(req, env), error: String(e.message).slice(0, 200) })),
+		async (e, a) => console.log(JSON.stringify({ m: isObjectCallDeadline(e) ? 'object-deadline-retry' : 'isolate-reset-retry', attempt: a, kind: classifyObjectError(e) || (isObjectCallDeadline(e) ? 'no-answer' : null), path: url.pathname, deadlineMs: e.deadlineMs || null, ...(await memIdOf(req, env)), error: String(e.message).slice(0, 200) })),
 	).catch((e) => {
 		if (req.signal && req.signal.aborted) return { gone: true }; // #721: the caller disconnected (not an object error)
 		throw e;
@@ -4384,7 +4385,7 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 		return disconnectAnswer(req.method);
 	}
 	if (res.deadline) {
-		console.log(JSON.stringify({ m: 'object-deadline', path: url.pathname, method: req.method, deadlineMs: res.deadlineMs, attempts: res.attempts, call: callId, ...memIdOf(req, env), answered: res.deadline.status }));
+		console.log(JSON.stringify({ m: 'object-deadline', path: url.pathname, method: req.method, deadlineMs: res.deadlineMs, attempts: res.attempts, call: callId, ...(await memIdOf(req, env)), answered: res.deadline.status }));
 		return res.deadline;
 	}
 	const retried = res.attempts > 1;
@@ -4406,7 +4407,7 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 		// are thrown as before (fetchWithMemoryRetry rethrows them).
 		const reset = isResetKind(kind);
 		const tag = reset ? 'isolate-reset' : kind === 'internal' ? 'platform-internal' : 'overloaded';
-		console.log(JSON.stringify({ m: tag, kind, path: url.pathname, retried, ...memIdOf(req, env), call: callId, error: String(e.message).slice(0, 200) }));
+		console.log(JSON.stringify({ m: tag, kind, path: url.pathname, retried, ...(await memIdOf(req, env)), call: callId, error: String(e.message).slice(0, 200) }));
 		// A method that may have written (anything but GET, HEAD or OPTIONS) and died in a reset,
 		// or in a platform internal error (#1004): its earlier writes may be saved (#350; #398 saw
 		// a page create and a delete saved), so no 503 "try again" and never the dispatcher 502
@@ -4417,7 +4418,7 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 			console.log(JSON.stringify({ m: 'frame-probe', phase: 'request-killed', state: fr ? fr.state : null, points: fr ? fr.points : null }));
 			const wl = frameProvesRollback(fr) ? rolledBackResponse(wantsJson(url.pathname, url.search, req.headers.get('accept')), kind, fr.undone) : writeLossResponse('unknown', wantsJson(url.pathname, url.search, req.headers.get('accept')), kind);
 			// #596: id is the operator perf id. answered is this response's status. PHP never answered here, so there is no phpStatus.
-			console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', kind, method: req.method, path: url.pathname, failed: 'unknown', phase: 'request-killed', ...memIdOf(req, env), call: callId, answered: wl.status }));
+			console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', kind, method: req.method, path: url.pathname, failed: 'unknown', phase: 'request-killed', ...(await memIdOf(req, env)), call: callId, answered: wl.status }));
 			wl.headers['x-php-object'] = name;
 			if (pfReq) wl.headers['x-pf-req'] = pfReq; // the request id, for a spike-token /_frame read (#352)
 			return new Response(wl.body, { status: wl.status, headers: wl.headers });
@@ -4512,7 +4513,7 @@ const site = {
 		// Never store operator responses at the edge (perf-headers.mjs operatorNoStore).
 		// #1328: a busy 503 for a request that misses a stored copy (a WP cookie on a cacheable URL) is a 429, or the edge
 		// would serve that copy STALE in its place (page-copy.mjs busyAnswerFor).
-		return operatorNoStore(scrubPerfHeaders(busyAnswerFor(req, new URL(req.url), env, await this.serve(req, env, ctx)), perfHeadersAllowed(req, env)), req);
+		return operatorNoStore(scrubPerfHeaders(busyAnswerFor(req, new URL(req.url), env, await this.serve(req, env, ctx)), await perfHeadersAllowed(req, env)), req);
 	},
 	async serve(req, env, ctx) {
 		ENV = env;
@@ -4542,12 +4543,12 @@ const site = {
 		// The scheduled snapshot (#533): the dispatcher's cron calls it with SNAPSHOT_TOKEN (db-snapshot.mjs),
 		// so it is gated by that key, not by SPIKE_TOKEN, and goes to the object, which is the database.
 		if (url.pathname === SNAPSHOT_PATH) {
-			const gate = snapshotGate(req, env);
+			const gate = await snapshotGate(req, env);
 			if (gate !== 'ok') return gateResponse(gate);
 			if (env.PHP_IN_DO !== 'on' || !env.PHP_RUNTIME) return Response.json({ ok: false, error: 'no-object' }, { status: 409 });
 			return toPhpObject(req, env, url, ctx);
 		}
-		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
+		const spikeOk = await tokensEqual(req.headers.get('x-spike-token'), env.SPIKE_TOKEN);
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		// #1152: the Worker's build and the cron object's (its /_build answers from the object's own code), so a deploy can
 		// tell whether the cron object moved to the new version. Spike token (the gate above).
@@ -5150,9 +5151,9 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 		}
 		try {
 			if (!isolateStart) isolateStart = Date.now(); // #474: the isolate's first request
-			ledgerActive = ledgerOn(env, req.headers.get('x-mem-ledger'), perfHeadersAllowed(req, env));
-			qtrace = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN && req.headers.get('x-pf-qtrace') === '1' ? createQueryTrace() : null;
-			ledgerId = ledgerActive ? memIdOf(req, env).id || null : null;
+			ledgerActive = ledgerOn(env, req.headers.get('x-mem-ledger'), await perfHeadersAllowed(req, env));
+			qtrace = (await tokensEqual(req.headers.get('x-spike-token'), env.SPIKE_TOKEN)) && req.headers.get('x-pf-qtrace') === '1' ? createQueryTrace() : null;
+			ledgerId = ledgerActive ? (await memIdOf(req, env)).id || null : null;
 			ledgerFailLogged = false;
 			sqlMeter.reset();
 			ledgerInfl0 = { n: stats.inflates, b: stats.inflateBytes, r: stats.reinflates, ae: inflateArena ? inflateArena.counts.evicts : 0 };
@@ -5321,7 +5322,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				let rb = null;
 				try { rb = undoLog && sqlDb ? undoLog.rollbackFrame(sqlDb, sqlStorage) : null; } catch (e) { console.log(JSON.stringify({ m: 'frame-rollback-failed', error: String((e && e.message) || e).slice(0, 160) })); }
 				try { if (undoLog) await undoLog.finishCacheDrops(); } catch (e) { console.log(JSON.stringify({ m: 'options-cache-drop-failed', error: String((e && e.message) || e).slice(0, 160) })); }
-				if (rb) console.log(JSON.stringify({ m: 'frame-rolled-back', at: 'reset-failure', req: rb.req, undone: rb.undone, points: rb.points, path: url.pathname, ...memIdOf(req, env) }));
+				if (rb) console.log(JSON.stringify({ m: 'frame-rolled-back', at: 'reset-failure', req: rb.req, undone: rb.undone, points: rb.points, path: url.pathname, ...(await memIdOf(req, env)) }));
 				const json = wantsJson(url.pathname, url.search, req.headers.get('accept'));
 				// "Nothing was saved" only on the proof, the frame's own row as /_frame reads it (#352).
 				const fr = rb && undoLog ? undoLog.status(sqlDb, rb.req) : null;
@@ -5331,7 +5332,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				const wl = writeLossResponse(lost, json);
 				const answer = rolled || wl;
 				// phpStatus is PHP's status before this replacement. answered is the status returned below (#596).
-				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, rolledBack: !!rolled, ocDropped: ocForgot.n, ocDroppedGroups: ocForgot.groups, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql), ...memIdOf(req, env), ...callTag(ctx), answered: wl.status }));
+				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, rolledBack: !!rolled, ocDropped: ocForgot.n, ocDroppedGroups: ocForgot.groups, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql), ...(await memIdOf(req, env)), ...callTag(ctx), answered: wl.status }));
 				dropRuntime(); // the runtime saw the reset; the next request boots a new one
 				if (purgeRetry) purgeRetry(); // #1007: the statements before the reset may be saved, so their pages too
 				return new Response(answer.body, { status: answer.status, headers: answer.headers });
@@ -5379,7 +5380,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					const filesGone = rb ? await deleteFrameR2(rb.req, rb.r2) : true; // #1039
 					const saved = (rb ? !(filesGone && frameProvesRollback(fr)) : wrote) || writeOutcomeUnknown(d.failures); // #1178
 					const sf = statementFailureResponse(d.failures.length, wantsJson(url.pathname, url.search, req.headers.get('accept')), saved);
-					console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'platform', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, wrote, rolledBack: !!(rb && !saved), answered: sf.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env), ...callTag(ctx) }));
+					console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'platform', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, wrote, rolledBack: !!(rb && !saved), answered: sf.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...(await memIdOf(req, env)), ...callTag(ctx) }));
 					if (purgeRetry && saved) purgeRetry(); // #1007: a saved write changed pages, so their purge is asked again
 					return new Response(sf.body, { status: sf.status, headers: sf.headers });
 				}
@@ -5391,11 +5392,11 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					const f = ocReqForget();
 					const wrote = d.log.some((l) => /^ok\s+\(?\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(l));
 					const sr = refusedReadResponse(refusal, wantsJson(url.pathname, url.search, req.headers.get('accept')), wrote);
-					console.log(JSON.stringify({ '@event': 'sql-refused', m: 'sql-refused', refused: refusal, method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, wrote, answered: sr.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
+					console.log(JSON.stringify({ '@event': 'sql-refused', m: 'sql-refused', refused: refusal, method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, wrote, answered: sr.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...(await memIdOf(req, env)) }));
 					return new Response(sr.body, { status: sr.status, headers: sr.headers });
 				}
 				const f = readFailed(d.failures) ? ocReqForget() : { n: 0 };
-				console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'deterministic', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, answered: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env), ...callTag(ctx) }));
+				console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'deterministic', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, answered: r.httpStatusCode, ocDropped: f.n, ...(await memIdOf(req, env)), ...callTag(ctx) }));
 			}
 			if (purgeReset) {
 				if (bootPromise) runtimeDrops++;
@@ -5442,7 +5443,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			if (ctx && ctx.inObject) out.set('x-boot-origin', bootOrigin);
 			// The path only, never the query string: a store's URLs carry order keys and logins there.
 			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls, ...callTag(ctx) }));
-			if (qtrace) { console.log(JSON.stringify({ m: 'qtrace', ...memIdOf(req, env), iso: ISOLATE_ID, method: req.method, status: r.httpStatusCode, ...qtrace.summary() })); qtrace = null; }
+			if (qtrace) { console.log(JSON.stringify({ m: 'qtrace', ...(await memIdOf(req, env)), iso: ISOLATE_ID, method: req.method, status: r.httpStatusCode, ...qtrace.summary() })); qtrace = null; }
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			if (tracing()) fileTrace.end({ status: r.httpStatusCode });
 			evictLazy();
@@ -5547,7 +5548,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			} else {
 				// #1078: approach A (PHP in the Worker, index-a.js) logs the same timing line, so a tail can time a real suite
 				// request: wall, boot, PHP time, and the query count and round-trip total (one bridge call per MySQL query).
-				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, lockWaitMs: runLockWaitMs, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, bootPh: booted && bootMs ? bootPhases(bootMs.marks) : undefined, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, ...(() => { const conn1 = dbConnStats(); return { dbConnN: conn1 ? conn1.n - conn0.n : undefined, dbConnMs: conn1 ? conn1.ms - conn0.ms : undefined }; })(), wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), r2: r2OpsDelta(stats.r2, start.r2), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full, opCompiled: op0.plain === null || op1.plain === null ? undefined : op1.plain - op0.plain + (op1.rewrites - op0.rewrites) } : {}) })));
+				console.log(JSON.stringify(aPerfLine({ id: (await memIdOf(req, env)).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, lockWaitMs: runLockWaitMs, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, bootPh: booted && bootMs ? bootPhases(bootMs.marks) : undefined, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, ...(() => { const conn1 = dbConnStats(); return { dbConnN: conn1 ? conn1.n - conn0.n : undefined, dbConnMs: conn1 ? conn1.ms - conn0.ms : undefined }; })(), wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), r2: r2OpsDelta(stats.r2, start.r2), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full, opCompiled: op0.plain === null || op1.plain === null ? undefined : op1.plain - op0.plain + (op1.rewrites - op0.rewrites) } : {}) })));
 			}
 			const response = new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 			// #394 (b): a recycled runtime is RELEASED, not only forgotten. bootPromise = null alone left

@@ -109,14 +109,14 @@ export async function fetchWithMemoryRetry(send, method, onRetry) {
 			const kind = classifyObjectError(e);
 			if (kind) {
 				if (shouldRetryObjectError(kind, method, attempt)) {
-					if (onRetry) onRetry(e, attempt);
+					if (onRetry) await onRetry(e, attempt);
 					continue;
 				}
 				return { error: e, kind, attempts: attempt + 1 };
 			}
 			if (isObjectCallDeadlineError(e)) {
 				if (shouldRetryObjectDeadline(method, attempt)) {
-					if (onRetry) onRetry(e, attempt);
+					if (onRetry) await onRetry(e, attempt);
 					continue;
 				}
 				return { deadline: e.response, attempts: attempt + 1, deadlineMs: e.deadlineMs };

@@ -18,7 +18,7 @@ test('the list names the timing, statistics and runtime headers', () => {
 
 test('a request with no token gets none of them, and keeps the page and its other headers', async () => {
 	const env = { SPIKE_TOKEN: TOKEN };
-	const out = scrubPerfHeaders(answer(), perfHeadersAllowed(req(), env));
+	const out = scrubPerfHeaders(answer(), await perfHeadersAllowed(req(), env));
 	for (const h of PERF_HEADERS) assert.equal(out.headers.get(h), null, h);
 	assert.equal(out.headers.get('content-type'), 'text/html');
 	assert.equal(out.headers.get('cache-control'), 'public, max-age=60');
@@ -26,55 +26,55 @@ test('a request with no token gets none of them, and keeps the page and its othe
 	assert.equal(await out.text(), '<html>page</html>');
 });
 
-test('a wrong token gets none of them', () => {
+test('a wrong token gets none of them', async () => {
 	const env = { SPIKE_TOKEN: TOKEN };
-	const out = scrubPerfHeaders(answer(), perfHeadersAllowed(req({ 'x-spike-token': 'nope' }), env));
+	const out = scrubPerfHeaders(answer(), await perfHeadersAllowed(req({ 'x-spike-token': 'nope' }), env));
 	for (const h of PERF_HEADERS) assert.equal(out.headers.get(h), null, h);
 });
 
-test('with no SPIKE_TOKEN configured, an absent or empty header never matches', () => {
-	assert.equal(perfHeadersAllowed(req(), {}), false);
-	assert.equal(perfHeadersAllowed(req({ 'x-spike-token': '' }), { SPIKE_TOKEN: '' }), false);
-	assert.equal(perfHeadersAllowed(req({ 'x-spike-token': 'undefined' }), {}), false);
-	assert.equal(perfHeadersAllowed(req(), undefined), false);
+test('with no SPIKE_TOKEN configured, an absent or empty header never matches', async () => {
+	assert.equal(await perfHeadersAllowed(req(), {}), false);
+	assert.equal(await perfHeadersAllowed(req({ 'x-spike-token': '' }), { SPIKE_TOKEN: '' }), false);
+	assert.equal(await perfHeadersAllowed(req({ 'x-spike-token': 'undefined' }), {}), false);
+	assert.equal(await perfHeadersAllowed(req(), undefined), false);
 });
 
-test('the valid token keeps every header', () => {
+test('the valid token keeps every header', async () => {
 	const env = { SPIKE_TOKEN: TOKEN };
 	const res = answer();
-	const out = scrubPerfHeaders(res, perfHeadersAllowed(req({ 'x-spike-token': TOKEN }), env));
+	const out = scrubPerfHeaders(res, await perfHeadersAllowed(req({ 'x-spike-token': TOKEN }), env));
 	assert.equal(out, res);
 	for (const h of PERF_HEADERS) assert.equal(out.headers.get(h), '1', h);
 });
 
-test('PERF_HEADERS=on keeps them for every request, and only that exact value', () => {
-	assert.equal(perfHeadersAllowed(req(), { PERF_HEADERS: 'on' }), true);
-	assert.equal(perfHeadersAllowed(req(), { PERF_HEADERS: 'off' }), false);
-	assert.equal(perfHeadersAllowed(req(), { PERF_HEADERS: 'true' }), false);
+test('PERF_HEADERS=on keeps them for every request, and only that exact value', async () => {
+	assert.equal(await perfHeadersAllowed(req(), { PERF_HEADERS: 'on' }), true);
+	assert.equal(await perfHeadersAllowed(req(), { PERF_HEADERS: 'off' }), false);
+	assert.equal(await perfHeadersAllowed(req(), { PERF_HEADERS: 'true' }), false);
 });
 
 // #1271: x-wasm-mib is the PHP WebAssembly heap in MiB. It leaves only with the
 // spike token, or when PERF_HEADERS=on. A guest request gets none.
-test('#1271: a request without the token gets no x-wasm-mib, and one with it does', () => {
+test('#1271: a request without the token gets no x-wasm-mib, and one with it does', async () => {
 	assert.ok(PERF_HEADERS.includes('x-wasm-mib'), 'x-wasm-mib is an operator header');
 	const env = { SPIKE_TOKEN: TOKEN };
 	const page = (extra = {}) => new Response('ok', {
 		status: 200,
 		headers: { 'content-type': 'text/html', 'x-wasm-mib': '108', ...extra },
 	});
-	const alone = scrubPerfHeaders(page(), perfHeadersAllowed(req(), env));
+	const alone = scrubPerfHeaders(page(), await perfHeadersAllowed(req(), env));
 	assert.equal(alone.headers.get('x-wasm-mib'), null, 'no token: the heap header is removed');
 	assert.equal(alone.headers.get('content-type'), 'text/html');
-	const beside = scrubPerfHeaders(page({ 'x-php-ms': '12' }), perfHeadersAllowed(req(), env));
+	const beside = scrubPerfHeaders(page({ 'x-php-ms': '12' }), await perfHeadersAllowed(req(), env));
 	assert.equal(beside.headers.get('x-wasm-mib'), null, 'no token: still removed when other operator headers are present');
 	assert.equal(beside.headers.get('x-php-ms'), null);
-	const wrong = scrubPerfHeaders(page(), perfHeadersAllowed(req({ 'x-spike-token': 'nope' }), env));
+	const wrong = scrubPerfHeaders(page(), await perfHeadersAllowed(req({ 'x-spike-token': 'nope' }), env));
 	assert.equal(wrong.headers.get('x-wasm-mib'), null, 'a wrong token is not the operator');
-	const unset = scrubPerfHeaders(page(), perfHeadersAllowed(req({ 'x-spike-token': TOKEN }), {}));
+	const unset = scrubPerfHeaders(page(), await perfHeadersAllowed(req({ 'x-spike-token': TOKEN }), {}));
 	assert.equal(unset.headers.get('x-wasm-mib'), null, 'no SPIKE_TOKEN configured: the header does not match');
-	const withToken = scrubPerfHeaders(page(), perfHeadersAllowed(req({ 'x-spike-token': TOKEN }), env));
+	const withToken = scrubPerfHeaders(page(), await perfHeadersAllowed(req({ 'x-spike-token': TOKEN }), env));
 	assert.equal(withToken.headers.get('x-wasm-mib'), '108', 'the valid token keeps the heap header');
-	const on = scrubPerfHeaders(page(), perfHeadersAllowed(req(), { PERF_HEADERS: 'on' }));
+	const on = scrubPerfHeaders(page(), await perfHeadersAllowed(req(), { PERF_HEADERS: 'on' }));
 	assert.equal(on.headers.get('x-wasm-mib'), '108', 'PERF_HEADERS=on keeps it');
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /out\.set\('x-wasm-mib', String\(Math\.round\(wasmBytes \/ 1048576\)\)\);/, 'the Worker still measures the heap');
@@ -90,7 +90,7 @@ const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 
 test('every answer of the Worker passes through the scrub', () => {
 	assert.match(src, /import \{ perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore, serverTimingPhp \} from '\.\/perf-headers\.mjs';/);
-	assert.match(src, /async fetch\(req, env, ctx\) \{\s*(\/\/[^\n]*\n\s*)*return operatorNoStore\(scrubPerfHeaders\(busyAnswerFor\(req, new URL\(req\.url\), env, await this\.serve\(req, env, ctx\)\), perfHeadersAllowed\(req, env\)\), req\);/);
+	assert.match(src, /async fetch\(req, env, ctx\) \{\s*(\/\/[^\n]*\n\s*)*return operatorNoStore\(scrubPerfHeaders\(busyAnswerFor\(req, new URL\(req\.url\), env, await this\.serve\(req, env, ctx\)\), await perfHeadersAllowed\(req, env\)\), req\);/);
 	assert.match(src, /async serve\(req, env, ctx\) \{\s*ENV = env;/);
 });
 
@@ -158,7 +158,7 @@ test('index.js: an operator request never reaches the cached entrypoint, and bot
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	const route = readFileSync(new URL('../page-copy.mjs', import.meta.url), 'utf8').replace(/^[\s\S]*?export function pageCacheRoute\(/, 'function pageCacheRoute(').replace(/export function storeRequestSide[\s\S]*$/, '');
 	assert.match(route, /!isOperatorRequest\(req\)/, 'pageCacheRoute refuses an operator request');
-	assert.match(src, /return operatorNoStore\(scrubPerfHeaders\(busyAnswerFor\(req, new URL\(req\.url\), env, await this\.serve\(req, env, ctx\)\), perfHeadersAllowed\(req, env\)\), req\);/, 'the site answer is marked');
+	assert.match(src, /return operatorNoStore\(scrubPerfHeaders\(busyAnswerFor\(req, new URL\(req\.url\), env, await this\.serve\(req, env, ctx\)\), await perfHeadersAllowed\(req, env\)\), req\);/, 'the site answer is marked');
 	const pages = src.slice(src.indexOf('export class Pages extends WorkerEntrypoint'), src.indexOf('async purge(tags)'));
 	assert.match(pages, /if \(isOperatorRequest\(req\)\) noStoreAnywhere\(out\.headers\);/, 'the cached entrypoint marks it too');
 	assert.ok(!/out\.headers\.set\('cache-control', 'private, no-store'\);\s*return out;\s*}\s*\/\/ An RPC/.test(pages), 'not cache-control alone');

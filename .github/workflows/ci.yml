@@ -320,6 +320,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/mysql-export.test.mjs
       - name: b-dosql performance headers need the spike token
         run: node --test spikes/b2-wordpress/tests/perf-headers.test.mjs
+      - name: spike and snapshot tokens compare in constant time (#1431)
+        run: node --test spikes/b2-wordpress/tests/token-equal.test.mjs
       - name: b-dosql the Pages entrypoint stamps its render time, so a cached copy can be told from a fresh one (#628)
         run: node --test spikes/b2-wordpress/tests/page-stamp.test.mjs
       - name: b-dosql a shorter edge TTL for product pages, off by default, and the mark never leaves (#628 C2)

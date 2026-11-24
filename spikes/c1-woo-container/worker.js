@@ -8,6 +8,7 @@
 import { isProductView, gatewayMayWarm, warmStart, warmInfo } from './warm.js';
 import { protectedUploadKey } from '../b2-wordpress/upload-scope.mjs'; // the same rule as b2: one copy
 import { stripOperatorHeaders } from '../b2-wordpress/operator-headers.mjs'; // the same strip as b2: one copy (#1432)
+import { tokensEqual } from '../b2-wordpress/token-equal.mjs'; // the same token compare as b2 (#1431)
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { WorkerEntrypoint, cache } from 'cloudflare:workers';
 
@@ -484,7 +485,7 @@ function withoutOperatorHeaders(req) {
 export default {
 	async fetch(req, env, ctx) {
 		const url = new URL(req.url);
-		const spikeOk = env.SPIKE_TOKEN && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
+		const spikeOk = await tokensEqual(req.headers.get('x-spike-token'), env.SPIKE_TOKEN);
 		if (!spikeOk) req = withoutOperatorHeaders(req);
 		if (url.pathname === '/_store-stop') {
 			if (!spikeOk) return new Response('forbidden', { status: 403 });

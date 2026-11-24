@@ -5,6 +5,8 @@
 // x-spike-token, or on every request when PERF_HEADERS=on is set. A visitor gets none, and
 // the edge cache never stores them with a page.
 
+import { tokensEqual } from './token-equal.mjs';
+
 export const PERF_HEADERS = [
 	'x-php-object',
 	'x-object-ms',
@@ -30,10 +32,9 @@ export const PERF_HEADERS = [
 	'x-wasm-mib',
 ];
 
-export function perfHeadersAllowed(req, env) {
+export async function perfHeadersAllowed(req, env) {
 	if (env && env.PERF_HEADERS === 'on') return true;
-	const token = env && env.SPIKE_TOKEN;
-	return Boolean(token) && req.headers.get('x-spike-token') === token;
+	return tokensEqual(req.headers.get('x-spike-token'), env && env.SPIKE_TOKEN);
 }
 
 // Remove the headers above unless the request may see them. A response that carries none of

@@ -26,6 +26,6 @@ test('#1101: the error lines and the req line carry the call id (A: the run id; 
 	assert.match(src, /function callTag\(ctx\) \{\n\tconst call = \(ctx && ctx\.callId\) \|\| runCallId;\n\treturn call \? \{ call \} : \{\};\n\}/);
 });
 test('#1101: the object path request-killed lines carry the call id it already has', () => {
-	assert.match(src, /console\.log\(JSON\.stringify\(\{ m: tag, kind, path: url\.pathname, retried, \.\.\.memIdOf\(req, env\), call: callId, error:/);
-	assert.match(src, /'@event': 'write-loss', m: 'write-loss', kind, method: req\.method, path: url\.pathname, failed: 'unknown', phase: 'request-killed', \.\.\.memIdOf\(req, env\), call: callId,/);
+	assert.match(src, /console\.log\(JSON\.stringify\(\{ m: tag, kind, path: url\.pathname, retried, \.\.\.\(await memIdOf\(req, env\)\), call: callId, error:/);
+	assert.match(src, /'@event': 'write-loss', m: 'write-loss', kind, method: req\.method, path: url\.pathname, failed: 'unknown', phase: 'request-killed', \.\.\.\(await memIdOf\(req, env\)\), call: callId,/);
 });
