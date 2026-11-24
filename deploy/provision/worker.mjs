@@ -9,7 +9,7 @@ import { provisionSite } from './provision.mjs';
 import { readSite } from './registry.mjs';
 import {
   authorize, enforceRateLimit, callerKey,
-  validateRequest, selectToken, deriveTarget, buildServerCfg, BadRequest,
+  validateRequest, selectToken, deriveTarget, buildServerCfg, BadRequest, UpstreamError,
   verifyTurnstile, validatePublicRequest,
   refuseImpossibleOperatorPlan, parseOperatorApproachA, assertApproachAHyperdrive,
 } from './server-config.mjs';
@@ -84,7 +84,9 @@ async function handleOperator(request, env) {
     const r = await provisionSite(ctx, cfg);
     return json({ ok: true, provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname, existing: !!r.existing, installed: !!r.installed, admin: r.admin }, 200);
   } catch (e) {
-    return json({ ok: false, error: e.message }, e instanceof BadRequest ? 400 : 500);
+    if (e instanceof BadRequest) return json({ ok: false, error: e.message }, 400);
+    if (e instanceof UpstreamError) return json({ ok: false, error: e.message }, e.status || 502);
+    return json({ ok: false, error: e.message }, 500);
   }
 }
 

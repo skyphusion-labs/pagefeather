@@ -56,6 +56,7 @@ function withFetch(opts = {}) {
     if (init.method === 'POST' && String(url).endsWith('/_install')) return { ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":1}', ms: 5 }) };
     if (init.method === 'GET' && /\/hyperdrive\/configs\//.test(url)) {
       if (opts.hyperdriveForbidden) return { ok: false, status: 403, text: async () => '{"success":false,"errors":[]}' };
+      if (opts.hyperdriveUpstream) return { ok: false, status: opts.hyperdriveUpstream, text: async () => '{"success":false,"errors":[{"code":10000}]}' };
       if (opts.hyperdriveCaching) {
         return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, result: { id: HD_OK, origin: { scheme: 'mysql', host: 'h', database: 'd' }, caching: { disabled: false } } }) };
       }
@@ -245,6 +246,11 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
 
   const cacheOn = await run(makeEnv(), req({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev', database: HD_OK, placement: 'azure:westus2' }), { hyperdriveCaching: true });
   ok('kind a with caching Hyperdrive is 400', cacheOn.res.status === 400 && /cach/.test(cacheOn.json.error));
+
+  const up5 = await run(makeEnv(), req({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev', database: HD_OK, placement: 'azure:westus2' }), { hyperdriveUpstream: 502 });
+  ok('kind a: Hyperdrive Cloudflare 5xx is 502 not 400 (retryable upstream)', up5.res.status === 502 && up5.res.status !== 400 && /HTTP 502|retry/.test(up5.json.error));
+  const up429 = await run(makeEnv(), req({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev', database: HD_OK, placement: 'azure:westus2' }), { hyperdriveUpstream: 429 });
+  ok('kind a: Hyperdrive Cloudflare 429 is 503 not 400', up429.res.status === 503 && up429.res.status !== 400 && /HTTP 429/.test(up429.json.error));
 
   const r = await run(makeEnv(), req({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev', database: HD_OK, placement: 'azure:westus2', store: true }));
   ok('kind a: 200 with site-mystore and a hostname', r.res.status === 200 && r.json.ok === true && r.json.script === 'site-mystore' && r.json.hostname === 'mystore.skyphusionwp.dev' && r.json.provisioned === 'a');

@@ -4,7 +4,7 @@
 // passes.
 import { createHash } from 'node:crypto';
 import {
-  authorize, validateRequest, resolveBase, selectToken, deriveTarget, buildServerCfg, BadRequest,
+  authorize, validateRequest, resolveBase, selectToken, deriveTarget, buildServerCfg, BadRequest, UpstreamError,
   refuseImpossibleOperatorPlan, parseOperatorApproachA, assertApproachAHyperdrive, tablePrefixForName,
 } from '../server-config.mjs';
 
@@ -105,6 +105,16 @@ ok('selectToken: an unknown kind THROWS, never falls through to the elevated tok
 
   const forbidden = async () => ({ ok: false, status: 403, text: async () => JSON.stringify({ success: false, errors: [] }) });
   ok('assertApproachAHyperdrive: 403 is BLOCKED Hyperdrive Read', await throwsWith(() => assertApproachAHyperdrive({ acct: 'ACCT', token: 'TOK', fetchImpl: forbidden }, HD), /BLOCKED.*Hyperdrive Read|#431/));
+
+  const up5 = async () => ({ ok: false, status: 502, text: async () => JSON.stringify({ success: false, errors: [{ code: 10000 }] }) });
+  let upErr;
+  try { await assertApproachAHyperdrive({ acct: 'ACCT', token: 'TOK', fetchImpl: up5 }, HD); } catch (e) { upErr = e; }
+  ok('assertApproachAHyperdrive: Cloudflare 5xx is UpstreamError not BadRequest', upErr instanceof UpstreamError && !(upErr instanceof BadRequest) && upErr.status === 502 && /HTTP 502/.test(upErr.message));
+
+  const up429 = async () => ({ ok: false, status: 429, text: async () => JSON.stringify({ success: false, errors: [] }) });
+  let rateErr;
+  try { await assertApproachAHyperdrive({ acct: 'ACCT', token: 'TOK', fetchImpl: up429 }, HD); } catch (e) { rateErr = e; }
+  ok('assertApproachAHyperdrive: Cloudflare 429 is UpstreamError status 503', rateErr instanceof UpstreamError && rateErr.status === 503 && /HTTP 429/.test(rateErr.message));
 }
 {
   const WD = JSON.stringify({ 'workers.dev': { workersDev: true, subdomain: 'acme' } });

@@ -76,6 +76,15 @@ export function validateRequest(body, { kinds = ['wp'] } = {}) {
   return { kind, name, domain };
 }
 export class BadRequest extends Error {}
+// Upstream Cloudflare API failure (5xx / 429). Not BadRequest: Path A maps this to
+// 502 / 503 so an outage is retryable, not a client input error (#1456 Bugbot).
+export class UpstreamError extends Error {
+  constructor(message, status = 502) {
+    super(message);
+    this.name = 'UpstreamError';
+    this.status = status === 429 ? 503 : 502;
+  }
+}
 
 // ---- 4. Server-owned base domains -------------------------------------------
 // env.WFP_BASES is a JSON map of OWNED base domains to their routing config:
@@ -430,6 +439,8 @@ export function parseOperatorApproachA(body, name) {
 
 // Read the Hyperdrive config and refuse a non-MySQL origin or query caching on
 // (oneclick readHyperdrive / #650). Fail closed. Names the config id, never a token.
+// 401 / 403 / 404 and bad config shape are BadRequest (400). Cloudflare 5xx / 429
+// are UpstreamError (502 / 503) so Path A does not look like bad operator input.
 export async function assertApproachAHyperdrive(ctx, hyperdriveId) {
   if (typeof hyperdriveId !== 'string' || !HYPERDRIVE_ID_RE.test(hyperdriveId)) {
     throw new BadRequest('kind a needs a Hyperdrive config id (32 lower-case hex)');
@@ -438,6 +449,10 @@ export async function assertApproachAHyperdrive(ctx, hyperdriveId) {
   if (r.status === 404) throw new BadRequest(`No Hyperdrive configuration has id ${hyperdriveId} in this account`);
   if (r.status === 401 || r.status === 403) {
     throw new BadRequest('BLOCKED: WP_PROVISION_TOKEN cannot read Hyperdrive configurations; add Hyperdrive Read (#431 ruling 1)');
+  }
+  if (r.status === 429 || r.status >= 500) {
+    const codes = (r.errors || []).map((e) => e && e.code).filter(Boolean).join(',');
+    throw new UpstreamError(`could not read Hyperdrive config ${hyperdriveId} (HTTP ${r.status}${codes ? ', codes ' + codes : ''}); retry later`, r.status);
   }
   if (!r.ok || !r.result) {
     const codes = (r.errors || []).map((e) => e && e.code).filter(Boolean).join(',');
