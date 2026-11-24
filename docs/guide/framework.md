@@ -6,18 +6,18 @@ The key idea: the provisioning core is only Cloudflare API calls (fetch plus Web
 
 New to this from a traditional LAMP WordPress host (a Linux box with Apache or nginx, PHP, and MySQL)? Start with [docs/guide/from-lamp.md](from-lamp.md), which maps your stack one-to-one onto this one, then come back here for the commands and prerequisites.
 
-## Two kinds of site: `wp` (b-dosql, the store path) and `a` (the scale-out path)
+## Two kinds of site: `wp` (b-dosql, light storefront) and `a` (the real store path)
 
-This page is about `wp` (called b-dosql), the kind with zero outside infrastructure. For scale-out, the second kind is `a`: PHP-WASM in a Worker with the database on a managed MySQL through Hyperdrive. It has its own flow in [onboarding.md](onboarding.md) (`site add --kind a`). Both kinds go through the same provisioning core.
+This page is about `wp` (called b-dosql), the kind with zero outside infrastructure. The second kind is `a`: PHP-WASM in a Worker with MySQL through Hyperdrive. That is the real store path. It has its own flow in [onboarding.md](onboarding.md) (`site add --kind a`). Both kinds go through the same provisioning core.
 
 A `wp` site is WordPress with PHP and its SQLite database inside one Durable Object. It runs as a user Worker in the dispatch namespace. A site can be:
 
 - a content site (a blog or a brochure site); or
-- a WooCommerce store. WooCommerce runs on b-dosql **including checkout**. This is measured on Workers Paid: an order places under the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](limits.md#memory-limits-the-three-figures)), and `tests/woo.py` is green (see the README matrix and `docs/results.md`).
+- a light WooCommerce storefront. Shop, cart, and checkout work on b-dosql. This is measured on Workers Paid: an order places under the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](limits.md#memory-limits-the-three-figures)), and `tests/woo.py` is green (see the README matrix and `docs/results.md`). Under load the isolate can reset, and a write in flight can be lost ([#1022](https://github.com/skyphusion-labs/pagefeather/issues/1022)). A real store uses approach `a`.
 
 There is no container store. The older "c1" store path (WordPress in a Cloudflare Container) was retired in #214, because b-dosql now does checkout directly. Its notes stay as a record in [../approach-c1.md](../approach-c1.md). The CLI and the provisioning Worker refuse `kind: shop`.
 
-**The limit to know:** a b-dosql site is one Durable Object. It has one writer and one region. The limit that binds the site is the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](limits.md#memory-limits-the-three-figures)). A blog or a light-to-moderate store fits under that write ceiling. For a store with real concurrent traffic, use approach `a` ([onboarding.md](onboarding.md)), which scales sideways. A store that outgrows b-dosql can also go to a VPS (the normal LAMP stack). See [from-lamp.md](from-lamp.md) and [limits.md](limits.md).
+**The limit to know:** a b-dosql site is one Durable Object. It has one writer and one region. The limit that binds the site is the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](limits.md#memory-limits-the-three-figures)). A blog or a light storefront fits under that write ceiling. For a real store with concurrent traffic, use approach `a` ([onboarding.md](onboarding.md); [#1022](https://github.com/skyphusion-labs/pagefeather/issues/1022)). A site that outgrows b-dosql can also go to a VPS (the normal LAMP stack). See [from-lamp.md](from-lamp.md) and [limits.md](limits.md).
 
 ## Default integrations
 
@@ -166,8 +166,8 @@ The operator path is one command per side: `site hostname add <name> --domain <d
 
 ## Honest limits
 
-- A site is ONE Durable Object: one writer, one region. The limit that binds the site is the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](limits.md#memory-limits-the-three-figures)). Throughput is about 1 divided by the CPU time of one request (about 4 public pages a second at 230 ms; see `docs/perf-dosql.md`). A store with sustained, heavy concurrent load belongs on a VPS.
-- There is no container store. The c1 path was retired (#214); see [../approach-c1.md](../approach-c1.md) for the record. A store that outgrows b-dosql uses approach A or a VPS, not a container.
+- A site is ONE Durable Object: one writer, one region. The limit that binds the site is the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](limits.md#memory-limits-the-three-figures)). Throughput is about 1 divided by the CPU time of one request (about 4 public pages a second at 230 ms; see `docs/perf-dosql.md`). A real store with sustained concurrent load uses approach A or a VPS ([#1022](https://github.com/skyphusion-labs/pagefeather/issues/1022)).
+- There is no container store. The c1 path was retired (#214); see [../approach-c1.md](../approach-c1.md) for the record. A site that outgrows b-dosql uses approach A or a VPS, not a container.
 - Open items are listed in [limits.md](limits.md).
 - Custom hostnames bill per hostname beyond the Cloudflare for SaaS free allowance.
 - A single deployment picks one routing phase for its b-dosql sites (`workers.dev` or custom hostnames); see `docs/guide/operator.md`, "one phase for the whole deployment".
@@ -175,7 +175,7 @@ The operator path is one command per side: `site hostname add <name> --domain <d
 ## The architecture, each claim measured
 
 - **A Worker can make a site, with no build.** The core is only API calls (issues #154, #182). See `deploy/provision/README.md`.
-- **Transactional checkout works on b-dosql.** `tests/woo.py` is green on Workers Paid (see the README matrix and `docs/results.md`).
+- **Transactional checkout works on b-dosql for a light storefront.** `tests/woo.py` is green on Workers Paid (see the README matrix and `docs/results.md`). Under load, write-loss is measured ([#1022](https://github.com/skyphusion-labs/pagefeather/issues/1022)).
 - **Concurrent multi-site load.** WooCommerce and WordPress sites under concurrent load: issue #152.
 - **Isolation.** Each site has its own user Worker, Durable Object and SQLite, R2 bucket, secrets, and per-call limits; one site cannot read another's. `deploy/wfp/bindings.py` checks after every upload that a script binds only its own resources.
 
