@@ -8,7 +8,9 @@
 set -uo pipefail
 envf=${1:?pf394a env}; cnf=${2:?mysql defaults file}; db=${3:?database}
 K=$(cd "$(dirname "$0")" && pwd); cd "$K"; umask 077
-MYSQL=/opt/homebrew/opt/mysql-client/bin/mysql
+# mysql on PATH, or set MYSQL to the client binary (Homebrew mysql-client is fine).
+MYSQL="${MYSQL:-$(command -v mysql || true)}"
+[ -n "$MYSQL" ] || { echo "mysql not on PATH; set MYSQL to the client binary"; exit 1; }
 set -a; . "$envf"; set +a
 export SRC_TOKEN=$SPIKE_TOKEN
 echo "start $(date -u +%Y-%m-%dT%H:%M:%SZ)"

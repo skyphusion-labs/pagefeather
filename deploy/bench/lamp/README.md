@@ -14,10 +14,13 @@ operator; no public route needed (measured from localhost).
 
 1. Provision the box with `cloud-init.sh` as user-data (installs the LAMP stack,
    wp-cli, production-like OPcache).
-2. Run `setup-and-measure.sh` (from a control host; it SSHes in): it creates two
-   installs, wp-plain (`:8081`) and wp-woo (`:8082`) at WordPress 7.1.5 +
-   WooCommerce 11.2.1, then measures server-side time from localhost
-   (`curl %{time_total}` and `woo.py`, the same checkout flow used for b-dosql).
+2. Run `setup-and-measure.sh` (from a control host; it SSHes in). Set
+   `LAMP_WORKDIR` to the directory that holds `lamp-ready.txt`, `woo.py`, and
+   `break_lib.py`. Set `SSH_IDENTITY_FILE` when the SSH key is not
+   `$HOME/.ssh/id_ed25519`. The script creates two installs, wp-plain (`:8081`)
+   and wp-woo (`:8082`) at WordPress 7.1.5 + WooCommerce 11.2.1, then measures
+   server-side time from localhost (`curl %{time_total}` and `woo.py`, the same
+   checkout flow used for b-dosql).
 
 ## Measured (2026-11-07, localhost, no network)
 

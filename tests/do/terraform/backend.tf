@@ -2,7 +2,7 @@
 # git: it holds the database password, the tunnel token and the Access secret.
 # Same settings as skyphusion-labs/ggc terraform/backend.tf, which explains
 # each one. Credentials: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (an R2 key
-# for this bucket only), from /Users/conrad/.wp-on-cf-tfstate.env.
+# for this bucket only), from $TFSTATE_ENV (default $HOME/.wp-on-cf-tfstate.env).
 terraform {
   backend "s3" {
     bucket = "wp-on-cf-tfstate"

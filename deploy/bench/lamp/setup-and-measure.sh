@@ -1,13 +1,17 @@
 #!/bin/bash
 # Setup two WP installs (plain + woo) on the LAMP box and measure server-side time from localhost.
+# LAMP_WORKDIR: directory with lamp-ready.txt, woo.py, and break_lib.py (required).
+# SSH_IDENTITY_FILE: SSH private key for the LAMP box (default $HOME/.ssh/id_ed25519).
+# Set SSH_IDENTITY_FILE when the key is not the default name (for example a crew key).
 set -uo pipefail
-W=/private/tmp/claude-501/-Users-conrad-dev/fe5eb5a2-eaf4-4025-bb27-73921fdcf1aa/scratchpad/wfp
+W="${LAMP_WORKDIR:?set LAMP_WORKDIR to the directory with lamp-ready.txt}"
+SSH_IDENTITY_FILE="${SSH_IDENTITY_FILE:-$HOME/.ssh/id_ed25519}"
 IP=$(grep '^IP=' "$W/lamp-ready.txt" | cut -d= -f2)
 [ -z "$IP" ] && { echo "no LAMP IP yet"; exit 1; }
-SSHO="-i ${SSH_IDENTITY_FILE:-$HOME/.ssh/id_ed25519} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
+SSHO=(-i "$SSH_IDENTITY_FILE" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20)
 LOG="$W/lamp-run.log"; RESULT="$W/lamp-result.txt"
-scp $SSHO "$W/woo.py" "$W/break_lib.py" root@"$IP":/root/ >/dev/null 2>&1
-ssh $SSHO root@"$IP" 'bash -s' >"$LOG" 2>&1 <<'REMOTE'
+scp "${SSHO[@]}" "$W/woo.py" "$W/break_lib.py" root@"$IP":/root/ >/dev/null 2>&1
+ssh "${SSHO[@]}" root@"$IP" 'bash -s' >"$LOG" 2>&1 <<'REMOTE'
 set -uo pipefail
 DBPW=$(openssl rand -hex 16); APW=$(openssl rand -hex 16); echo "$APW" > /root/.benchpw; chmod 600 /root/.benchpw /root/.benchpw
 mysql -e "CREATE DATABASE IF NOT EXISTS wp_plain; CREATE DATABASE IF NOT EXISTS wp_woo; CREATE USER IF NOT EXISTS 'wp'@'localhost' IDENTIFIED BY '$DBPW'; GRANT ALL ON wp_plain.* TO 'wp'@'localhost'; GRANT ALL ON wp_woo.* TO 'wp'@'localhost'; FLUSH PRIVILEGES;"

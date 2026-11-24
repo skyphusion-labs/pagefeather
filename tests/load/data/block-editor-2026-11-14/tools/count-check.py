@@ -2,10 +2,13 @@
 highest integer primary key equal to the report's last rowid where the table has one integer PK.
   count-check.py <report.json> <mysql defaults file> <database>
 Exit 1 on any difference. Prints names and numbers only."""
-import json, subprocess, sys
+import json, os, shutil, subprocess, sys
 rep, cnf, db = sys.argv[1:4]
 r = json.load(open(rep))
-MYSQL = "/opt/homebrew/opt/mysql-client/bin/mysql"
+# mysql on PATH, or set MYSQL to the client binary (Homebrew mysql-client is fine).
+MYSQL = os.environ.get("MYSQL") or shutil.which("mysql")
+if not MYSQL:
+    sys.exit("mysql not on PATH; set MYSQL to the client binary")
 def q(sql):
     p = subprocess.run([MYSQL, "--defaults-extra-file=" + cnf, "--ssl-mode=REQUIRED", "-N", "-B", db, "-e", sql], capture_output=True, text=True)
     if p.returncode != 0:
