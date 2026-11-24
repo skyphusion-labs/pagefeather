@@ -13,7 +13,8 @@ import { fileURLToPath } from 'node:url';
 
 const ZONE = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FILES = ['cache-ruleset.json', 'cache-ruleset.multitenant.json'];
-const load = (f) => JSON.parse(readFileSync(join(ZONE, f), 'utf8'));
+// Templates use bare __EDGE_TTL__ until apply.sh substitutes a number.
+const load = (f) => JSON.parse(readFileSync(join(ZONE, f), 'utf8').replaceAll('__EDGE_TTL__', '3600'));
 const bypassOf = (f) => load(f).rules.at(-1);
 
 const SHAPES = [
@@ -87,4 +88,14 @@ for (const f of FILES) {
 
 test('both rulesets bypass exactly the same requests (one expression, two files)', () => {
 	assert.equal(bypassOf(FILES[0]).expression, bypassOf(FILES[1]).expression);
+});
+
+test('both rulesets keep an EDGE_TTL placeholder for apply.sh', () => {
+	for (const f of FILES) {
+		const raw = readFileSync(join(ZONE, f), 'utf8');
+		assert.ok(raw.includes('__EDGE_TTL__'), `${f} missing __EDGE_TTL__`);
+		const ttl = load(f).rules[0].action_parameters.edge_ttl;
+		assert.equal(ttl.mode, 'override_origin');
+		assert.equal(ttl.default, 3600);
+	}
 });

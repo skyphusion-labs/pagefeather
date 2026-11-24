@@ -38,7 +38,7 @@ ok() { if [ "$2" = 1 ]; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails
 rules() { # rules <description>...: an entrypoint body with those rule descriptions
   python3 -I -c 'import json,sys; print(json.dumps({"success":True,"result":{"id":"x","rules":[{"id":"r%d"%i,"description":d} for i,d in enumerate(sys.argv[1:])]}}))' "$@"
 }
-ours() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["rules"][int(sys.argv[2])]["description"])' "$ZONE/$1" "$2"; }
+ours() { python3 -I -c 'import json,sys; print(json.loads(open(sys.argv[1]).read().replace("__EDGE_TTL__","1"))["rules"][int(sys.argv[2])]["description"])' "$ZONE/$1" "$2"; }
 
 run() { # run <script> <entry code> <entry body> [env...]: exit code in $rc, calls in $W/log
   local script=$1 code=$2 body=$3; shift 3

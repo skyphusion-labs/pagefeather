@@ -24,6 +24,31 @@ IMPORT_CONTENT="$MARKETING/wp-content" IMPORT_THEMES=pagefeather-site REPLACE_IN
 
 Activate `pagefeather-site` in Appearance > Themes after the import.
 
+## Zone edge cache (CR #1461)
+
+Guest HTML on `www.pagefeather.dev` uses the zone Cache Rules in
+[deploy/zone](../deploy/zone/). Apply with maximum edge TTL:
+
+```sh
+EDGE_TTL=31536000 \
+  CLOUDFLARE_API_TOKEN=... \
+  ACCOUNT_ID=fabcb25d9c7eb087110ec474a03e50d2 \
+  ZONE_ID=ed4aedb29f0a0f498ff756de2b5a72c4 \
+  HOSTNAME=www.pagefeather.dev \
+  WORKER_SERVICE=pagefeather \
+  ./deploy/zone/apply.sh
+```
+
+The first Durable Object hit pays TTFB. After that the edge should serve
+anonymous guests.
+
+### Purge on update: UNBUILT
+
+Purge-on-publish is **UNBUILT** for this product site. A content change can stay
+stale at the edge until `EDGE_TTL` ends, or until someone purges by hand. Do not
+claim automatic purge for www.pagefeather.dev yet. Customer auto-apply of cache
+rules is later. This apply is the marketing site only.
+
 ## Cutover
 
 Removing the theme from this repository does not change the live Worker by itself. The theme already on www.pagefeather.dev stays until the next deploy that runs with `IMPORT_CONTENT` from pagefeather-dev (or another path that still holds the theme). Keep a marketing checkout ready before that deploy.
