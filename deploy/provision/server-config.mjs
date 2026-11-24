@@ -10,6 +10,7 @@
 // and picks an OWNED base domain from an allowlist; it configures nothing.
 import { SITE_NAME_RE, assertValidName, isCallerReservedName, genSecret } from './shared.mjs';
 import { bDosqlBindings, bDosqlResourceCreateOps, bDosqlSecrets, mediaBucketName, aBindings, ocKvNamespaceName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs, aCacheInputs, dbQueryTimeoutInputs } from './wp-site-config.mjs';
+import { cfFetch } from './cf.mjs';
 
 // ---- 1. Caller auth (operator baseline) --------------------------------------
 // A shared operator secret in env.PROVISION_AUTH, sent as `Authorization:
@@ -91,18 +92,14 @@ export function resolveBase(env, domain) {
 }
 
 // ---- 5. Least-privilege token split -----------------------------------------
-// wp runs on the restricted token (no account-token minting, no plain
-// /workers/scripts write); shop runs on the elevated token (adds minting and
-// Containers). The wp path NEVER holds the elevated token. Token VALUES are env
-// vars, never in code.
-// ONE token only (#214): the c1 'shop' store path was retired, so the elevated
-// SHOP_PROVISION_TOKEN (which could mint account tokens and edit Containers) is
-// gone. The provisioning Worker runs entirely on the restricted WP token, which
-// cannot mint a token or write a plain script. An unknown kind THROWS.
-const TOKEN_ENV = { wp: 'WP_PROVISION_TOKEN' };
+// wp and a (approach A) both run on the restricted WP token (no account-token
+// minting). The c1 'shop' elevated token is gone (#214). Token VALUES are env
+// vars, never in code. An unknown kind THROWS.
+// Approach A needs Hyperdrive Read on the same token (#431 ruling 1).
+const TOKEN_ENV = { wp: 'WP_PROVISION_TOKEN', a: 'WP_PROVISION_TOKEN' };
 export function selectToken(env, kind) {
   const key = Object.hasOwn(TOKEN_ENV, kind) ? TOKEN_ENV[kind] : undefined;
-  if (!key) throw new Error(`selectToken: unknown kind ${JSON.stringify(kind)} (only 'wp' is supported; c1 'shop' retired #214)`);
+  if (!key) throw new Error(`selectToken: unknown kind ${JSON.stringify(kind)} (only 'wp' and 'a' are supported; c1 'shop' retired #214)`);
   const token = env[key];
   if (!token) throw new Error(`the Worker is missing ${key}`);
   return token;
@@ -264,7 +261,7 @@ export const HYPERDRIVE_ID_RE = /^[0-9a-f]{32}$/;
 // ending in an underscore, at most 40 characters (several stores share a database).
 export const TABLE_PREFIX_RE = /^[A-Za-z0-9_]{1,39}_$/;
 
-export async function buildServerCfg(env, { kind, name, domain, demo = false, expiresAt, codeLock = false, hyperdriveId, tablePrefix, hyperdriveSqlMode, store = false, placementRegion }) {
+export async function buildServerCfg(env, { kind, name, domain, demo = false, expiresAt, codeLock = false, hyperdriveId, tablePrefix, hyperdriveSqlMode, store = false, placementRegion, placement: placementOpt }) {
   // #706: refuse a bad TTL or a bad WOO_ACTIVE before the bundle is read.
   try { pageCacheProductTtl(pageCacheInputs(env, { store })); objectTimeInputs(env); aCacheInputs(env); dbQueryTimeoutInputs(env); }
   catch (e) { throw new BadRequest(e.message); }
@@ -274,8 +271,13 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
     if (typeof tablePrefix !== 'string' || !TABLE_PREFIX_RE.test(tablePrefix)) throw new Error('buildServerCfg: kind a needs a table prefix (letters, digits, underscores, ending in _, at most 40)');
     if (demo) throw new Error('buildServerCfg: a demo site is kind wp only');
     // #1063: the database's region, so the Worker runs next to it. Optional here: the caller decides when it is
-    // required (the site manager requires it for a NEW store).
+    // required (the site manager requires it for a NEW store). placement: null means none on purpose (CLI --placement none).
     if (placementRegion !== undefined && !PLACEMENT_REGION_RE.test(String(placementRegion))) throw new BadRequest(`buildServerCfg: the placement region must be <aws|gcp|azure>:<region>, for example azure:westus2`);
+    if (placementOpt !== undefined && placementOpt !== null) {
+      if (!placementOpt || placementOpt.mode !== 'targeted' || !PLACEMENT_REGION_RE.test(String(placementOpt.region || ''))) {
+        throw new BadRequest('buildServerCfg: placement must be {mode:"targeted",region:"<aws|gcp|azure>:<region>"} or null');
+      }
+    }
   }
   const target = deriveTarget(env, { kind, name, domain });
   const compatibilityDate = env.WFP_COMPAT || '2026-07-01';
@@ -344,7 +346,9 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
         ...dbQueryTimeoutInputs(env), // #1364
       }),
       sqliteClasses: [],
-      ...(placementRegion ? { placement: { mode: 'targeted', region: placementRegion } } : {}),
+      // #1063: explicit placement (including null) wins; else placementRegion from oneclick / older callers.
+      ...(placementOpt !== undefined ? { placement: placementOpt }
+        : (placementRegion ? { placement: { mode: 'targeted', region: placementRegion } } : {})),
       kvNamespaces: [{ title: ocKvNamespaceName(name), binding: 'OC_KV' }],
       saasZoneId: target.saasZoneId,
       secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24) },
@@ -355,6 +359,100 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
   throw new Error(`buildServerCfg: only kinds 'wp' and 'a' are supported (c1 'shop' retired #214), got ${JSON.stringify(kind)}`);
 }
 
+
+// ---- Path A operator: approach A opts (CLI parity; #431 Worker slice) --------
+// validateRequest still drops Hyperdrive fields from the minimal {kind,name,domain}
+// parse. The authenticated Path A handler reads them here, after auth, the same
+// trust model as cli.mjs argv. Modules, bindings, namespace, kv, zone and secrets
+// still never come from the body.
+
+// Table prefix from the site name (several stores can share one database).
+export function tablePrefixForName(name) {
+  const p = `wp_${String(name).replace(/-/g, '_')}_`;
+  if (!TABLE_PREFIX_RE.test(p)) throw new BadRequest('this site name cannot be used for approach A; pick a shorter name');
+  return p;
+}
+
+// Loud product-truth gates. Hyperdrive on Workers Free is a measured Fail
+// (docs/results.md, A Free, 2026-11-05: installer 1102; e2e and woo fail at CPU).
+// Free single-site is deploy/deploy.sh, not this SaaS / WfP Worker.
+export function refuseImpossibleOperatorPlan(body, kind) {
+  if (!body || typeof body !== 'object') return;
+  const plan = typeof body.plan === 'string' ? body.plan.trim().toLowerCase() : '';
+  const surface = typeof body.surface === 'string' ? body.surface.trim().toLowerCase() : '';
+  if (kind === 'a' && (plan === 'free' || surface === 'free' || surface === 'free-single')) {
+    throw new BadRequest('BLOCKED: approach A (Hyperdrive) on Workers Free is a measured Fail (docs/results.md, A Free, 2026-11-05: installer 1102 after 7.7 s; e2e and WooCommerce fail at the CPU limit). Use Workers Paid. See #431.');
+  }
+  if (surface === 'free-single' || surface === 'free') {
+    throw new BadRequest('BLOCKED: Free single-site is deploy/deploy.sh with VARIANT=b-dosql, not the provisioning Worker (SaaS / Workers for Platforms). See #294 and #328.');
+  }
+}
+
+// Parse operator approach A fields from the body. Returns opts for buildServerCfg.
+// placement is required for a NEW site (CLI parity, #1063); "none" is placement: null.
+export function parseOperatorApproachA(body, name) {
+  if (!body || typeof body !== 'object') throw new BadRequest('body must be a JSON object');
+  const rawId = typeof body.database === 'string' ? body.database
+    : (typeof body.hyperdriveId === 'string' ? body.hyperdriveId : '');
+  const hyperdriveId = String(rawId).trim().toLowerCase();
+  if (!HYPERDRIVE_ID_RE.test(hyperdriveId)) {
+    throw new BadRequest('kind a needs database (or hyperdriveId): a Hyperdrive config id (32 lower-case hex), the same as cli.mjs --hyperdrive');
+  }
+  if (body.placement === undefined || body.placement === null || body.placement === '') {
+    throw new BadRequest('kind a needs placement: <aws|gcp|azure>:<region> (for example azure:westus2), or none (#1063; same as cli.mjs --placement)');
+  }
+  const rawPlacement = String(body.placement).trim().toLowerCase();
+  let placement;
+  if (rawPlacement === 'none') placement = null;
+  else if (!PLACEMENT_REGION_RE.test(rawPlacement)) {
+    throw new BadRequest('placement must be <aws|gcp|azure>:<region> (for example azure:westus2) or none');
+  } else placement = { mode: 'targeted', region: rawPlacement };
+
+  let tablePrefix = typeof body.tablePrefix === 'string' ? body.tablePrefix : tablePrefixForName(name);
+  if (!TABLE_PREFIX_RE.test(tablePrefix)) throw new BadRequest('tablePrefix must be letters, digits and underscores, ending in _, at most 40 characters');
+
+  let hyperdriveSqlMode;
+  if (body.hyperdriveSqlMode !== undefined && body.hyperdriveSqlMode !== null && body.hyperdriveSqlMode !== '') {
+    if (typeof body.hyperdriveSqlMode !== 'string' || !/^[A-Za-z_,]*$/.test(body.hyperdriveSqlMode)) {
+      throw new BadRequest('hyperdriveSqlMode must match [A-Za-z_,]*');
+    }
+    hyperdriveSqlMode = body.hyperdriveSqlMode;
+  }
+  const store = body.store === true;
+  return {
+    hyperdriveId,
+    tablePrefix,
+    placement,
+    ...(hyperdriveSqlMode !== undefined ? { hyperdriveSqlMode } : {}),
+    store,
+  };
+}
+
+// Read the Hyperdrive config and refuse a non-MySQL origin or query caching on
+// (oneclick readHyperdrive / #650). Fail closed. Names the config id, never a token.
+export async function assertApproachAHyperdrive(ctx, hyperdriveId) {
+  if (typeof hyperdriveId !== 'string' || !HYPERDRIVE_ID_RE.test(hyperdriveId)) {
+    throw new BadRequest('kind a needs a Hyperdrive config id (32 lower-case hex)');
+  }
+  const r = await cfFetch(ctx.token, 'GET', `/accounts/${ctx.acct}/hyperdrive/configs/${encodeURIComponent(hyperdriveId)}`, { fetchImpl: ctx.fetchImpl });
+  if (r.status === 404) throw new BadRequest(`No Hyperdrive configuration has id ${hyperdriveId} in this account`);
+  if (r.status === 401 || r.status === 403) {
+    throw new BadRequest('BLOCKED: WP_PROVISION_TOKEN cannot read Hyperdrive configurations; add Hyperdrive Read (#431 ruling 1)');
+  }
+  if (!r.ok || !r.result) {
+    const codes = (r.errors || []).map((e) => e && e.code).filter(Boolean).join(',');
+    throw new BadRequest(`could not read Hyperdrive config ${hyperdriveId} (HTTP ${r.status}${codes ? ', codes ' + codes : ''}); kind a is refused (fail closed)`);
+  }
+  const c = r.result;
+  const o = c.origin || {};
+  if (o.scheme !== 'mysql') {
+    throw new BadRequest(`Hyperdrive config ${hyperdriveId} is ${typeof o.scheme === 'string' && o.scheme ? o.scheme : 'not MySQL'}, not MySQL; kind a needs MySQL`);
+  }
+  if (!(c.caching && c.caching.disabled === true)) {
+    throw new BadRequest(`Hyperdrive config ${hyperdriveId} caches queries (caching.disabled is not true); turn caching off (#650, #431)`);
+  }
+  return { id: hyperdriveId, name: String(c.name || ''), host: String(o.host || ''), database: String(o.database || '') };
+}
 
 // ---- Path B (public demo) controls ------------------------------------------
 // Turnstile verify, FAIL CLOSED. The public demo form solves a Turnstile
