@@ -38,4 +38,4 @@ deploy/tests/render-golden/render-golden-test.sh
 4. Commit `goldens/` in the same PR, and say why in the PR body.
 
 In #328, PR 1 to PR 7 must not change a golden. Only PR 8 (the OC_KV L2 for deploy/wfp sites)
-changes one.
+changes one. PR 1 adds `siteNames` only; it must leave every golden byte-identical.

@@ -53,7 +53,9 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   the owned-base allowlist, the least-privilege token split, the trusted bundle
   loader, and the server-side cfg builder.
 - `wp-site-config.mjs` (#182, #241): the ONE source for what a site must bind, so
-  the Worker and the CLI cannot drift. `bDosqlVars` / `bDosqlBindings` for a
+  the Worker and the CLI cannot drift. `siteNames(name)` (#328 PR 1) is the one
+  table for derived resource names (script, dispatcher, media bucket, OC_KV,
+  queues, dataset, search index, Hyperdrive config). `bDosqlVars` / `bDosqlBindings` for a
   b-dosql `wp` site (MEDIA/IMAGES/PHP_RUNTIME/EMAIL + the runtime vars), matched
   against deploy/wfp lib.sh render_user. `aVars` / `aBindings` for an approach-A
   `a` site (MEDIA/IMAGES/HYPERDRIVE/OC_KV/EMAIL + the object-cache, lazy-node and

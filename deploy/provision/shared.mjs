@@ -32,6 +32,17 @@ export const RESERVED_NAMES = new Set([
 // project's own derived script or bucket names (site-<s>, c1-<s>, wp-wfp-<s>-media).
 export const RESERVED_PREFIXES = ['site-', 'c1-', 'wp-wfp-', 'wp-woo-'];
 
+// WfP-only reserved site names (#328 PR 1, row M). A site's dispatcher is
+// wp-<name>, so these collide with shared Workers (lib.sh SHARED_WORKER_SITE_NAMES).
+// "auto" collides with scheduled snapshot expiry (#533 / #540).
+// "wfp-" is refused by lib.sh valid_site (case wfp-*).
+// Exported so the union can name every rule. Callers are not switched in PR 1.
+export const SHARED_WORKER_SITE_NAMES = Object.freeze([
+  'probe', 'dispatch', 'cacheprobe', 'cacheprobe-direct',
+]);
+export const WFP_RESERVED_SITE_NAMES = Object.freeze(['auto']);
+export const WFP_NAME_PREFIXES = Object.freeze(['wfp-']);
+
 export function isReservedName(name) {
   if (typeof name !== 'string') return false;
   const n = name.toLowerCase();
@@ -95,4 +106,16 @@ export function isDemoName(name) {
 // reserved for callers (validateRequest, the CLI) but not for the core backstop.
 export function isCallerReservedName(name) {
   return isReservedName(name) || isDemoName(name);
+}
+
+// Union of core and WfP site-name refusals (#328 PR 1). Refuse if either path
+// refuses. No rule is loosened. Callers still use isCallerReservedName /
+// valid_site until a later PR switches them.
+export function isUnionReservedName(name) {
+  if (typeof name !== 'string') return false;
+  const n = name.toLowerCase();
+  if (isCallerReservedName(name)) return true;
+  if (SHARED_WORKER_SITE_NAMES.includes(n)) return true;
+  if (WFP_RESERVED_SITE_NAMES.includes(n)) return true;
+  return WFP_NAME_PREFIXES.some((p) => n.startsWith(p));
 }
