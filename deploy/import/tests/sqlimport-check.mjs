@@ -13,6 +13,9 @@ const allow = [
 	`INSERT ${H} INTO \`wp_t\` (\`a\`, \`b\`) VALUES (1,'x')`,
 	"INSERT INTO `wp_t` VALUES (1,'GRANT ALL ON *.* TO x; SET GLOBAL y=1; LOAD DATA')",
 	"CREATE TABLE `wp_x` (`like` int, `as` int, `select_count` int)",
+	// Sample-store admin password replace on kind a (#1470): one row, two columns only.
+	"UPDATE `wp_users` SET `user_pass` = '\$wp\$2y\$10\$abcdefghijklmnopqrstuv', `user_activation_key` = '' WHERE `ID` = 1",
+	"UPDATE `wp_users` SET `user_pass` = 'it''s fine', `user_activation_key` = '' WHERE `ID` = 1",
 ];
 const refuse = [
 	'GRANT ALL ON *.* TO `x`@`%`',
@@ -51,6 +54,13 @@ const refuse = [
 	"CREATE TABLE `wp_x` (`a` int /* c */)",
 	"CREATE TABLE `wp_x` (`a` int -- c\n)",
 	"CREATE TABLE `wp_x` (`a` int GENERATED ALWAYS AS ((SELECT 1)))",
+	// Any UPDATE outside the narrow admin-password form.
+	"UPDATE `wp_users` SET `user_pass` = 'x' WHERE `ID` = 1",
+	"UPDATE `wp_users` SET `user_pass` = 'x', `user_activation_key` = '' WHERE `ID` = 2",
+	"UPDATE `wp_users` SET `user_email` = 'a@b.c', `user_activation_key` = '' WHERE `ID` = 1",
+	"UPDATE `wp_posts` SET `user_pass` = 'x', `user_activation_key` = '' WHERE `ID` = 1",
+	"UPDATE `wp_options` SET `option_value` = 'x' WHERE `option_name` = 'siteurl'",
+	"UPDATE `wp_users` SET `user_pass` = 'a\\b', `user_activation_key` = '' WHERE `ID` = 1",
 	'',
 ];
 const reasons = [

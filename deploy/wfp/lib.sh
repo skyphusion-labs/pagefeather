@@ -609,6 +609,16 @@ woo_extras_var() {
     *) echo "WOO_EXTRAS must be off or unset, not ${WOO_EXTRAS}" >&2; return 1 ;;
   esac
 }
+# DEMO_LOCK: on marks a public demo store. The runtime sets PAGEFEATHER_DEMO_STORE
+# (site-lock.mjs) so php/demo-store-notice.php prints the Pagefeather demo copy on
+# the home page. Mail is refused (sendEmail). Unset renders nothing. Recorded (#558).
+demo_lock_var() {
+  case "${DEMO_LOCK:-}" in
+    "") ;;
+    on) echo 'DEMO_LOCK = "on"' ;;
+    *) echo "DEMO_LOCK must be on or unset, not ${DEMO_LOCK}" >&2; return 1 ;;
+  esac
+}
 render_user() { # render_user <site> <origin>
   # #1258: the same refusal as deploy.sh and render-conf.sh. Nothing here renders DEV_LOCAL.
   wp_cli_local_seam_check || return 2
@@ -679,6 +689,8 @@ render_user() { # render_user <site> <origin>
   ( . "$WFP/../pdf-invoice.sh"; pdf_invoice_check b-dosql ) || return 1
   local woo_extras; woo_extras=$(woo_extras_var) || return 1
   [ -z "$woo_extras" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$woo_extras
+  local demo_lock; demo_lock=$(demo_lock_var) || return 1
+  [ -z "$demo_lock" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$demo_lock
   # FAULT_INJECT (#730): the throwaway-only post-INSERT fault, the same rule as deploy.sh (deploy/fault-inject.sh).
   local fault; fault=$(fault_inject_var "$s") || return 2
   conformance_var "$s" || return 2  # #764: the last guard, on the inputs this render builds from
@@ -967,7 +979,7 @@ use_recorded_inputs() {
 # unset is the default list, and set, including empty, is that exact list. site update
 # remembers which one this run is, in http_allow_mode, before local -x collapses unset
 # into empty. Empty denies every host, so a drop sets the mode to unset.
-SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS TURNSTILE_REGISTER TURNSTILE_WOO_REGISTER TURNSTILE_LOSTPASSWORD MAIL_FROM MAIL_FROM_NAME MAIL_ALLOWED_TO PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE PAGE_CACHE_TTL OBSERVABILITY SITE_TITLE DB_QUERY_TIMEOUT_MS"
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS TURNSTILE_REGISTER TURNSTILE_WOO_REGISTER TURNSTILE_LOSTPASSWORD MAIL_FROM MAIL_FROM_NAME MAIL_ALLOWED_TO PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE PAGE_CACHE_TTL OBSERVABILITY SITE_TITLE DB_QUERY_TIMEOUT_MS DEMO_LOCK"
 # The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export

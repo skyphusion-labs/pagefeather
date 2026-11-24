@@ -142,6 +142,12 @@ render_conf() {
   if [ "${RENDER_WFP:-0}" = 1 ] && a_cron_on; then echo 'CRON_SELF_TICK = "on"'; fi
   # WOO_EXTRAS (#667): off only. Checked above, before any step. Unset writes nothing.
   [ -z "${WOO_EXTRAS:-}" ] || echo 'WOO_EXTRAS = "off"'
+  # DEMO_LOCK: on marks a public demo store (PAGEFEATHER_DEMO_STORE + no outbound mail). Unset writes nothing.
+  case "${DEMO_LOCK:-}" in
+    "") ;;
+    on) echo 'DEMO_LOCK = "on"' ;;
+    *) echo "DEMO_LOCK must be on or unset, not ${DEMO_LOCK}" >&2; return 1 ;;
+  esac
   # FAULT_INJECT (#730): checked before any step (deploy/fault-inject.sh, fault_check). Unset writes nothing.
   fault_line
   # OBJECT_CALL_DEADLINE_S, OBJECT_START_BY_S (#703, #708): deploy/object-time.sh. Unset writes nothing.

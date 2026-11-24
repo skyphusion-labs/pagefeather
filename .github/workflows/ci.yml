@@ -720,6 +720,9 @@ jobs:
         # clear-uploads.sh against fake-s3: list, exact-key delete, read-back 0.
         # Refuses another site's prefix, an empty prefix and a root prefix. No account.
         run: tests/fixtures/tests/clear-uploads-test.sh
+      - name: sample-store approach A path keeps the 2609-product pin
+        # Offline: pin >= 2000, kind a import uses VARIANT=a, bad pin loads nothing.
+        run: tests/fixtures/tests/sample-store-a-path-test.sh
       - name: zone cache ruleset tests
         # deploy/zone: the bypass rule is last and keeps every per-user and operator request out of the edge cache.
         run: node --test deploy/zone/tests/cache-ruleset.test.mjs

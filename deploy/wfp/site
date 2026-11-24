@@ -107,7 +107,7 @@ update_one_inner() {
   # empty, and empty denies every host, so remember which one this run is first.
   local http_allow_mode=env
   if [ "${HTTP_ALLOW_HOSTS+x}" = x ]; then http_allow_mode=set; else http_allow_mode=unset; fi
-  local -x PHP_INI="${PHP_INI:-}" LAZY_CACHE_MB="${LAZY_CACHE_MB:-}" LAZY_ARENA="${LAZY_ARENA:-}" LAZY_ARENA_MB="${LAZY_ARENA_MB:-}" PHP_RECYCLE="${PHP_RECYCLE:-}" RECYCLE_WASM_MIB="${RECYCLE_WASM_MIB:-}" PHP_MEMORY_REUSE="${PHP_MEMORY_REUSE:-}" BOOT_GATE="${BOOT_GATE:-}" CRON_INTERVAL_MS="${CRON_INTERVAL_MS:-}" TURNSTILE_SITEKEY="${TURNSTILE_SITEKEY:-}" TURNSTILE_WOO="${TURNSTILE_WOO:-}" TURNSTILE_LOGIN="${TURNSTILE_LOGIN:-}" TURNSTILE_COMMENTS="${TURNSTILE_COMMENTS:-}" TURNSTILE_REGISTER="${TURNSTILE_REGISTER:-}" TURNSTILE_WOO_REGISTER="${TURNSTILE_WOO_REGISTER:-}" TURNSTILE_LOSTPASSWORD="${TURNSTILE_LOSTPASSWORD:-}" MAIL_FROM="${MAIL_FROM:-}" MAIL_FROM_NAME="${MAIL_FROM_NAME:-}" MAIL_ALLOWED_TO="${MAIL_ALLOWED_TO:-}" PHP_LOCATION="${PHP_LOCATION:-}" WP_VECTORIZE_SEARCH="${WP_VECTORIZE_SEARCH:-}" OPCACHE_SPLIT="${OPCACHE_SPLIT:-}" OPCACHE_REMOTE="${OPCACHE_REMOTE:-}" SITE_REMOTE="${SITE_REMOTE:-}" REMOTE_FETCH_CAP="${REMOTE_FETCH_CAP:-}" REMOTE_HOLD_KIB="${REMOTE_HOLD_KIB:-}" SITE_FETCH_CAP="${SITE_FETCH_CAP:-}" SITE_HOLD_KIB="${SITE_HOLD_KIB:-}" SITE_RETRY_MS="${SITE_RETRY_MS:-}" REQUEST_FRAMES="${REQUEST_FRAMES:-}" WOO_EXTRAS="${WOO_EXTRAS:-}" OBJECT_CALL_DEADLINE_S="${OBJECT_CALL_DEADLINE_S:-}" OBJECT_START_BY_S="${OBJECT_START_BY_S:-}" OBJECT_DISCONNECT_SHED="${OBJECT_DISCONNECT_SHED:-}" PDF_INVOICE="${PDF_INVOICE:-}" PAGE_CACHE_TTL="${PAGE_CACHE_TTL:-}" PAGE_CACHE_PRODUCT_TTL="${PAGE_CACHE_PRODUCT_TTL:-}" HTTP_ALLOW_HOSTS="${HTTP_ALLOW_HOSTS:-}" OBSERVABILITY="${OBSERVABILITY:-}" SITE_TITLE="${SITE_TITLE:-}" DB_QUERY_TIMEOUT_MS="${DB_QUERY_TIMEOUT_MS:-}"
+  local -x PHP_INI="${PHP_INI:-}" LAZY_CACHE_MB="${LAZY_CACHE_MB:-}" LAZY_ARENA="${LAZY_ARENA:-}" LAZY_ARENA_MB="${LAZY_ARENA_MB:-}" PHP_RECYCLE="${PHP_RECYCLE:-}" RECYCLE_WASM_MIB="${RECYCLE_WASM_MIB:-}" PHP_MEMORY_REUSE="${PHP_MEMORY_REUSE:-}" BOOT_GATE="${BOOT_GATE:-}" CRON_INTERVAL_MS="${CRON_INTERVAL_MS:-}" TURNSTILE_SITEKEY="${TURNSTILE_SITEKEY:-}" TURNSTILE_WOO="${TURNSTILE_WOO:-}" TURNSTILE_LOGIN="${TURNSTILE_LOGIN:-}" TURNSTILE_COMMENTS="${TURNSTILE_COMMENTS:-}" TURNSTILE_REGISTER="${TURNSTILE_REGISTER:-}" TURNSTILE_WOO_REGISTER="${TURNSTILE_WOO_REGISTER:-}" TURNSTILE_LOSTPASSWORD="${TURNSTILE_LOSTPASSWORD:-}" MAIL_FROM="${MAIL_FROM:-}" MAIL_FROM_NAME="${MAIL_FROM_NAME:-}" MAIL_ALLOWED_TO="${MAIL_ALLOWED_TO:-}" PHP_LOCATION="${PHP_LOCATION:-}" WP_VECTORIZE_SEARCH="${WP_VECTORIZE_SEARCH:-}" OPCACHE_SPLIT="${OPCACHE_SPLIT:-}" OPCACHE_REMOTE="${OPCACHE_REMOTE:-}" SITE_REMOTE="${SITE_REMOTE:-}" REMOTE_FETCH_CAP="${REMOTE_FETCH_CAP:-}" REMOTE_HOLD_KIB="${REMOTE_HOLD_KIB:-}" SITE_FETCH_CAP="${SITE_FETCH_CAP:-}" SITE_HOLD_KIB="${SITE_HOLD_KIB:-}" SITE_RETRY_MS="${SITE_RETRY_MS:-}" REQUEST_FRAMES="${REQUEST_FRAMES:-}" WOO_EXTRAS="${WOO_EXTRAS:-}" OBJECT_CALL_DEADLINE_S="${OBJECT_CALL_DEADLINE_S:-}" OBJECT_START_BY_S="${OBJECT_START_BY_S:-}" OBJECT_DISCONNECT_SHED="${OBJECT_DISCONNECT_SHED:-}" PDF_INVOICE="${PDF_INVOICE:-}" PAGE_CACHE_TTL="${PAGE_CACHE_TTL:-}" PAGE_CACHE_PRODUCT_TTL="${PAGE_CACHE_PRODUCT_TTL:-}" HTTP_ALLOW_HOSTS="${HTTP_ALLOW_HOSTS:-}" OBSERVABILITY="${OBSERVABILITY:-}" SITE_TITLE="${SITE_TITLE:-}" DB_QUERY_TIMEOUT_MS="${DB_QUERY_TIMEOUT_MS:-}" DEMO_LOCK="${DEMO_LOCK:-}"
   local SETTINGS_RECORDED=0
   echo "site $s: the recorded settings"
   keep_settings "$bucket" "$WDIR" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
@@ -359,6 +359,8 @@ print(" ".join(sorted(x.get("cron", "") for x in r.get("schedules") or [])))') |
 # token (lib.sh r2_temp_mint, #273), so nothing is made in the account or the
 # state. It expires after R2_TEMP_TTL (21600 s), and media.sh mints a fresh one
 # on a refusal. The import replaces the site's whole database.
+# Kind a (#1319): VARIANT=a, so deploy/import.sh talks to Hyperdrive through
+# /_sqlimport. SQLITE is refused (that input is b-dosql only).
 import_one() {
   local s=$1
   valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not a shared Worker name (probe, dispatch, cacheprobe, cacheprobe-direct, wfp-*), not auto" >&2; return 2; }
@@ -368,7 +370,11 @@ import_one() {
   # The hostname, Custom Domain and zone the workspace records (lib.sh site_vars):
   # the import's origin is the site's real one.
   site_vars "$s" "$SUB" "$KV_ID" || return 1
-  kind_a_refuse "$s" || return 2  # #1319
+  local IMP_VARIANT=b-dosql
+  if [ "${REC_KIND:-b-dosql}" = a ]; then
+    [ -z "${SQLITE:-}" ] || { echo "site $s is kind a (approach A): site import needs DUMP=<mysqldump file>, not SQLITE" >&2; return 2; }
+    IMP_VARIANT=a
+  fi
   local HOST=$REC_HOST
   local TOK; TOK=$(tfr site output -raw spike_token)
   local need_key=0
@@ -381,7 +387,7 @@ import_one() {
     r2_temp_mint "$B" "$ttl" "$cf" || { rm -f "$cf"; trap - EXIT; echo "site $s: no temporary credential for $B; nothing was imported" >&2; return 1; }
   fi
   local rc=0
-  URL="https://$HOST" SPIKE_TOKEN="$TOK" \
+  VARIANT="$IMP_VARIANT" URL="https://$HOST" SPIKE_TOKEN="$TOK" \
     MEDIA_BUCKET="$B" \
     R2_ENDPOINT="$([ "$need_key" = 1 ] && tfr site output -raw r2_endpoint)" \
     R2_CRED_FILE="$cf" R2_CRED_REFRESH="$([ "$need_key" = 1 ] && r2_temp_refresh_cmd "$B" "$ttl" "$cf")" \

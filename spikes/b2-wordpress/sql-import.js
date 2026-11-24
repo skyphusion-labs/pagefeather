@@ -26,11 +26,13 @@ import { tokensEqual } from './token-equal.mjs';
 //
 // It needs the SPIKE_TOKEN secret and its x-spike-token header (no token set:
 // refused, unlike other spike endpoints). Every statement must pass
-// checkStatement() before any runs: only DROP TABLE IF EXISTS, CREATE TABLE and
-// INSERT ... VALUES, on one of the site's own tables (#487). Nothing else (no GRANT, SET, LOAD
-// DATA, SELECT, INTO OUTFILE, a function in VALUES, a comment, a second
-// statement). replace=1 first drops the site's own tables. MySQL commits DDL on
-// its own, so a part that fails leaves what ran before it.
+// checkStatement() before any runs: only DROP TABLE IF EXISTS, CREATE TABLE,
+// INSERT ... VALUES, and one narrow UPDATE (sample-store admin password on the
+// site's users table, ID 1 only), on one of the site's own tables (#487).
+// Nothing else (no GRANT, SET, LOAD DATA, SELECT, INTO OUTFILE, a function in
+// VALUES, a comment, a second statement). replace=1 first drops the site's own
+// tables. MySQL commits DDL on its own, so a part that fails leaves what ran
+// before it.
 //
 // The site's tables (#487): several stores can share one MySQL database, each with its own
 // WP_TABLE_PREFIX (the one-click manager makes wp_<name>_, #431). The prefix is the site's own, read
@@ -45,6 +47,10 @@ const MODE = "sql_mode='NO_AUTO_VALUE_ON_ZERO'";
 const DROP_RE = new RegExp(`^DROP TABLE IF EXISTS \`(${NAME})\`$`);
 const CREATE_RE = new RegExp(`^CREATE TABLE \`(${NAME})\` \\(`);
 const INSERT_RE = new RegExp(`^(SET STATEMENT ${MODE} FOR )?INSERT (/\\*\\+ SET_VAR\\(${MODE}\\) \\*/ )?INTO \`(${NAME})\` (\\(\`[A-Za-z0-9_]+\`(, ?\`[A-Za-z0-9_]+\`)*\\) )?VALUES `);
+// Sample-store admin password only: one row, two columns, literals only. No other UPDATE.
+const UPDATE_ADMIN_RE = new RegExp(
+	`^UPDATE \`(${NAME})\` SET \`user_pass\` = '((?:[^']|'')*)', \`user_activation_key\` = '' WHERE \`ID\` = 1$`,
+);
 const PREFIX_RE = /^[A-Za-z0-9_]{1,40}$/;
 /** The site's WP_TABLE_PREFIX, from env.PHP_ENV (as wp-config.php reads it); default wp_. Throws on a bad one. */
 export function tablePrefix(env) {
@@ -65,7 +71,7 @@ export function tablePrefix(env) {
 /** The table a checked statement names. */
 export function tableOf(sql) {
 	if (sql.endsWith(';')) sql = sql.slice(0, -1);
-	const m = sql.match(DROP_RE) || sql.match(CREATE_RE);
+	const m = sql.match(DROP_RE) || sql.match(CREATE_RE) || sql.match(UPDATE_ADMIN_RE);
 	if (m) return m[1];
 	const i = sql.match(INSERT_RE);
 	return i ? i[3] : null;
@@ -158,9 +164,17 @@ export function checkStatement(sql, prefix = 'wp_') {
 	const named = tableOf(sql);
 	if (named !== null && !named.startsWith(prefix)) return `table ${named} is outside the prefix ${prefix}`;
 	if (DROP_RE.test(sql)) return null;
+	const admin = sql.match(UPDATE_ADMIN_RE);
+	if (admin) {
+		// Only the site's users table (…users under the prefix). Password hash is a
+		// single-quoted literal (doubled quotes allowed). No backslash escapes.
+		if (!admin[1].endsWith('users')) return 'UPDATE is only for the site users table (admin password)';
+		if (/\\/.test(admin[2])) return 'a backslash in user_pass (not allowed)';
+		return null;
+	}
 	const create = CREATE_RE.test(sql);
 	const insert = sql.match(INSERT_RE);
-	if (!create && !insert) return 'not DROP TABLE IF EXISTS, CREATE TABLE or INSERT ... VALUES on one table';
+	if (!create && !insert) return 'not DROP TABLE IF EXISTS, CREATE TABLE, INSERT ... VALUES, or the admin password UPDATE';
 	// CREATE: no backslash and no double quote in its strings, so the server
 	// reads them the same way in every sql_mode (NO_BACKSLASH_ESCAPES,
 	// ANSI_QUOTES). INSERT: its mode is set by the hint, and backslashes are
