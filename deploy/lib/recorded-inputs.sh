@@ -1,9 +1,11 @@
 # shellcheck shell=bash
-# #1108 part 3: a deploy.sh site records its inputs, as deploy/wfp records its own (#379, #558). Every apply writes this
-# run's settings into the site's own Terraform state (variable and output deploy_inputs, base64 of JSON, so no HCL
-# escaping). Before the next apply, inputs_check reads the record back and refuses a run whose inputs differ, printing
-# each difference, unless REPLACE_INPUTS=1 (deploy/wfp's name for the same confirmation). A setting recorded last time
-# and unset now is a difference: a rebuild never drops one silently (the #1108 data loss was MEDIA dropped this way).
+# #1108 part 3: a deploy.sh site records its inputs, as deploy/wfp records its own (#379, #558). The value lives in the
+# site's own Terraform state (variable and output deploy_inputs, base64 of JSON, so no HCL escaping). The data-plane
+# apply keeps the value already recorded. This run's value is applied only after the upload succeeds (#1428), so a
+# build that fails (for example at fetch) does not record inputs that were never deployed. Before that apply,
+# inputs_check reads the record and refuses a run whose inputs differ, printing each difference, unless
+# REPLACE_INPUTS=1 (deploy/wfp's name for the same confirmation). A setting recorded last time and unset now is a
+# difference: a rebuild never drops one silently (the #1108 data loss was MEDIA dropped this way).
 # Secrets are never recorded: only the names below, none of which holds one. Test: deploy/tests/recorded-inputs-test.sh.
 # #1285: a key in the record that this build does not know stops the deploy and names the key, unless
 # REPLACE_INPUTS=1, which drops that key and names it. The check is deploy/lib/unknown_setting.py guard,
@@ -12,14 +14,49 @@ RECORDED_INPUTS="VARIANT LOCATION MEDIA WOO_ACTIVE SITE_ORIGIN PLACEMENT A_CLIEN
 RECORDED_INPUTS_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # deploy_inputs_value: this run's record, base64 of a JSON object of the names above that are SET (an empty value is
-# set). Word lists (PLUGINS and the like) are kept as given.
+# set). Word lists (PLUGINS and the like) are kept as given. An unset name is normal. The test is an `if`, not
+# `&&`, so the loop's status is 0 when the last name is unset. A bare value=$(deploy_inputs_value) under set -e
+# would otherwise stop the deploy before the build (#1428). A failed python still fails the pipeline.
 deploy_inputs_value() {
   local n
-  for n in $RECORDED_INPUTS; do [ "${!n+x}" = x ] && printf '%s\0%s\0' "$n" "${!n}"; done |
-    python3 -I -c 'import base64, json, sys
+  for n in $RECORDED_INPUTS; do
+    if [ "${!n+x}" = x ]; then printf '%s\0%s\0' "$n" "${!n}"; fi
+  done | python3 -I -c 'import base64, json, sys
 p = sys.stdin.buffer.read().split(b"\0")[:-1]
 d = {p[i].decode(): p[i + 1].decode() for i in range(0, len(p), 2)}
 print(base64.b64encode(json.dumps(d, sort_keys=False).encode()).decode(), end="")'
+}
+
+# recorded_deploy_inputs <terraform dir> <site name>: the deploy_inputs already in the site's state, or empty when
+# there is no record (a new site, or one deployed before #1108). Prints nothing and returns 2 when the record cannot
+# be read. The data-plane apply keeps this value, so a later failure does not replace it (#1428). inputs_check is
+# what refuses that unreadable record; this function stays quiet.
+recorded_deploy_inputs() {
+  local dir=$1 name=$2 wsl err rec
+  err=$(mktemp "${TMPDIR:-/tmp}/inputs-kept.XXXXXX")
+  if ! wsl=$(cd "$dir" && terraform workspace list -no-color 2>"$err"); then
+    rm -f "$err"
+    return 2
+  fi
+  if ! printf '%s\n' "$wsl" | sed 's/^[* ]*//' | grep -qx "$name"; then
+    rm -f "$err"
+    return 0
+  fi
+  if ! (cd "$dir" && terraform workspace select "$name" >/dev/null 2>"$err"); then
+    rm -f "$err"
+    return 2
+  fi
+  # In an `if`, so a missing output (status 1) does not abort under set -e before the "not found" check.
+  if ! rec=$(cd "$dir" && terraform output -no-color -raw deploy_inputs 2>"$err"); then
+    if grep -qE 'Output "deploy_inputs" not found|No outputs found' "$err"; then
+      rm -f "$err"
+      return 0
+    fi
+    rm -f "$err"
+    return 2
+  fi
+  rm -f "$err"
+  printf '%s' "$rec"
 }
 
 # inputs_check <terraform dir> <site name>: return 0 when there is no record (a new site, or one deployed before

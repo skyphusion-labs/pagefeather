@@ -254,23 +254,31 @@ fi
 . "$ROOT/deploy/lib/cron-version.sh"
 log "terraform: $VARIANT data plane for $NAME ($LOCATION)"
 backend "$TF"; mkdir -p "$TF/sites"
+(cd "$TF" && terraform init -input=false -reconfigure >/dev/null)
+# #1428: the data-plane apply keeps the inputs already recorded. this_inputs is the value inputs_check
+# compares (before the build, and before SITE_ORIGIN is derived). It is written only after the upload.
+if ! kept=$(recorded_deploy_inputs "$TF" "$NAME"); then
+  inputs_check "$TF" "$NAME" || exit 2
+  exit 2
+fi
+this_inputs=$(deploy_inputs_value)
 {
   echo "account_id = \"$ACCOUNT_ID\""
   echo "name       = \"$NAME\""
   echo "variant    = \"$VARIANT\""
   echo "location   = \"$LOCATION\""
   echo "media      = $([ "$MEDIA" = 1 ] && echo true || echo false)"
-  # #1108: this run's inputs, recorded in the site's state (deploy/lib/recorded-inputs.sh).
-  echo "deploy_inputs  = \"$(deploy_inputs_value)\""
+  # #1108: the recorded inputs, kept until the upload succeeds (record_deploy_inputs, #1428).
+  echo "deploy_inputs  = \"${kept}\""
   if [ "$VARIANT" = a ]; then
     echo "mysql_host     = \"$MYSQL_HOST\""
     echo "mysql_user     = \"$MYSQL_USER\""
     echo "mysql_database = \"$MYSQL_DATABASE\""
   fi
 } > "$TF/sites/$NAME.tfvars"
-(cd "$TF" && terraform init -input=false -reconfigure >/dev/null)
 # #1108: never delete an existing media bucket by default (deploy/lib/media-guard.sh). DESTROY_MEDIA=1 does it on purpose.
 # #1108: a rebuild whose inputs differ from the recorded ones is refused (REPLACE_INPUTS=1 replaces them on purpose).
+# This stays before any build. A failure here changes nothing in state.
 inputs_check "$TF" "$NAME" || exit 2
 # shellcheck source=lib/media-guard.sh
 . "$ROOT/deploy/lib/media-guard.sh"
@@ -288,10 +296,29 @@ else
   log "code only: no Terraform for $NAME; media bucket ${MEDIA_BUCKET:-none}"
   BUCKET=$([ "$MEDIA" = 1 ] && echo "$MEDIA_BUCKET" || true)
 fi
+# record_deploy_inputs <base64>: write this run's inputs into the site's state. Only after the upload
+# (c1: after its deploy) has succeeded. The data-plane apply above kept the previous record, so a failure
+# at fetch, or anywhere before the upload, leaves that record byte for byte (#1428). The value is the one
+# inputs_check compared, not a fresh read: the build may set SITE_ORIGIN after the check.
+record_deploy_inputs() {
+  local val=$1 file="$TF/sites/$NAME.tfvars" tmp
+  tmp=$(mktemp "${TMPDIR:-/tmp}/deploy-inputs.XXXXXX")
+  awk -v v="$val" 'BEGIN { done = 0 }
+    /^deploy_inputs  = / { print "deploy_inputs  = \"" v "\""; done = 1; next }
+    { print }
+    END { if (!done) print "deploy_inputs  = \"" v "\"" }' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$file" || return 1
+  tf "$TF" apply -input=false -auto-approve -var-file="sites/$NAME.tfvars" >> "$TF/sites/$NAME.apply.log" 2>&1 || {
+    echo "deployed, but the inputs were NOT recorded (#1428). The site's record is unchanged. Run the deploy again with the same inputs." >&2
+    return 1
+  }
+  echo "inputs recorded"
+}
 # Variant c1 (Container) has its own build, deploy and measure steps.
 if [ "$VARIANT" = c1 ]; then
   . "$ROOT/deploy/variants/c1.sh"
   c1_main
+  record_deploy_inputs "$this_inputs" || exit 1
   exit 0
 fi
 
@@ -384,6 +411,11 @@ log "deploy"
 # #754: the URL on wrangler's trigger line, never the first workers.dev URL in the output (a var such as
 # a var holding a workers.dev URL prints one in the bindings). deploy/deploy-url.sh. The origin check runs below, after the redaction.
 deploy_code_and_secrets || exit 1
+# #1428: the upload succeeded, and the data-plane apply already did. Record this run's inputs now.
+# CODE_ONLY never touches Terraform state, so it does not record.
+if [ "$CODE_ONLY" != 1 ]; then
+  record_deploy_inputs "$this_inputs" || exit 1
+fi
 # Logs on: redact the query strings now, before anything else runs on the site, or turn the logs off.
 # That PATCH can publish a new Worker version. Nothing between here and the install publishes another.
 obs_redact "$NAME" || exit 1
