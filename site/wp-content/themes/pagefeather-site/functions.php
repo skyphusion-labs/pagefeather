@@ -28,23 +28,25 @@ add_action('wp_enqueue_scripts', static function (): void {
 	wp_enqueue_style('pagefeather-fonts', $uri . '/assets/css/fonts.css', [], $fonts_ver);
 	wp_enqueue_style('pagefeather-site', $uri . '/assets/css/site.css', ['pagefeather-fonts'], $css_ver);
 	wp_enqueue_script('pagefeather-site', $uri . '/assets/js/site.js', [], $js_ver, true);
-
-	// Preload display fonts for the first viewport.
-	add_action('wp_head', static function () use ($uri): void {
-		$faces = [
-			'dm-sans.woff2',
-			'instrument-serif.woff2',
-			'instrument-serif-italic.woff2',
-			'jetbrains-mono.woff2',
-		];
-		foreach ($faces as $face) {
-			printf(
-				'<link rel="preload" href="%s" as="font" type="font/woff2" crossorigin>' . "\n",
-				esc_url($uri . '/assets/fonts/' . $face)
-			);
-		}
-	}, 1);
 }, 20);
+
+// Preload display fonts for the first viewport. Register on wp_head directly
+// (not from inside wp_enqueue_scripts): that hook runs after wp_head has started.
+add_action('wp_head', static function (): void {
+	$uri = get_template_directory_uri();
+	$faces = [
+		'dm-sans.woff2',
+		'instrument-serif.woff2',
+		'instrument-serif-italic.woff2',
+		'jetbrains-mono.woff2',
+	];
+	foreach ($faces as $face) {
+		printf(
+			'<link rel="preload" href="%s" as="font" type="font/woff2" crossorigin>' . "\n",
+			esc_url($uri . '/assets/fonts/' . $face)
+		);
+	}
+}, 0);
 
 add_filter('document_title_parts', static function (array $parts): array {
 	if (is_front_page()) {

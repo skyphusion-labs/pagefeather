@@ -18,6 +18,7 @@ $current = pagefeather_current_path();
 </head>
 <body <?php body_class(); ?>>
 <?php wp_body_open(); ?>
+<script>document.documentElement.classList.add("js");</script>
 <a class="skip" href="#main">Skip to content</a>
 <div class="atmosphere" aria-hidden="true">
 	<div class="grid-field"></div>
