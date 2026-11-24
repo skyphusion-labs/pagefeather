@@ -323,6 +323,7 @@ The token needs, on the one zone and account:
 - Workers Routes: Edit (attach the Custom Domain, dedicated mode only).
 - Zone Rulesets / Cache Rules: Edit (write the cache ruleset).
 - Account Rulesets: Edit (required by the Cache Rules API).
+- Zone Settings: Edit (set Web Analytics / RUM to off).
 
 The purge plugin's token is SEPARATE and narrower: Zone > Cache Purge on the one
 zone, held by the Worker. The token is read from `CLOUDFLARE_API_TOKEN` and
@@ -344,6 +345,27 @@ manual, so apply.sh keeps it commented):
 PATCH /zones/{zone_id}/settings/automatic_platform_optimization
   {"value":{"enabled":true,"cf":true,"wordpress":true,"wp_plugin":false,
             "hostnames":["wp.example.com"],"cache_by_device_type":false}}
+```
+
+## Web Analytics (RUM) stays off
+
+Cloudflare Web Analytics (also called RUM or Insights) injects
+`static.cloudflareinsights.com/beacon.min.js` into HTML when it is on. Privacy
+is the primary goal, so `apply.sh` sets the zone setting `rum` to `off` on every
+run.
+
+The product site on pagefeather.dev collects no Cloudflare Insights. The theme
+does not embed the beacon. Zaraz is empty for that zone. Do not add a Web
+Analytics site for pagefeather.dev in the dashboard.
+
+`apply.sh` turns the zone RUM setting off. It does not delete an account-level
+Web Analytics `site_info` row. If a site still exists for the zone, delete it
+with the Web Analytics API or the dashboard Manage Site > Delete flow.
+
+Verify the HTML has no beacon:
+
+```
+curl -sL https://www.pagefeather.dev/ | grep -E 'cloudflareinsights|data-cf-beacon' || echo 'no beacon'
 ```
 
 ## Zaraz is opt-in, not a default

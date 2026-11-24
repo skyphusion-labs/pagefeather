@@ -30,20 +30,21 @@
 #     the entrypoint PUT REPLACES all rules, so a per-tenant apply would wipe the
 #     other tenants. Run multitenant mode once for the whole zone.
 #
-# Both modes are idempotent (safe to re-run). It does NOT create DNS, enable APO,
-# or touch anything else on the zone. Reverse it with destroy.sh. The token is
-# read from the environment and passed to curl through a -K config on a pipe,
-# never in argv (so it is not in `ps`).
+# Both modes are idempotent (safe to re-run). It does NOT create DNS or enable
+# APO. It does set zone Web Analytics (RUM) to off. Reverse the cache lever with
+# destroy.sh (RUM stays off). The token is read from the environment and passed
+# to curl through a -K config on a pipe, never in argv (so it is not in `ps`).
 #
 # APO (Automatic Platform Optimization) is a separate, PAID, mostly-manual step;
-# see README.md. This script applies the free, as-code Cache Rules path only.
+# see README.md. This script applies the free Cache Rules path, and keeps RUM
+# off for privacy.
 set -euo pipefail
 
 API="https://api.cloudflare.com/client/v4"
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 MODE=${MODE:-dedicated}
 
-: "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN (needs Workers Routes Edit + Cache Rules/Zone Rulesets Edit)}"
+: "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN (needs Workers Routes Edit + Cache Rules/Zone Rulesets Edit + Zone Settings Edit for RUM)}"
 ACCOUNT_ID=${ACCOUNT_ID:-${CLOUDFLARE_ACCOUNT_ID:-}}
 : "${ACCOUNT_ID:?set ACCOUNT_ID (or CLOUDFLARE_ACCOUNT_ID)}"
 : "${ZONE_ID:?set ZONE_ID (the zone that owns the hostname(s))}"
@@ -136,15 +137,29 @@ cf_ok "cache ruleset" PUT "/zones/$ZONE_ID/rulesets/phases/http_request_cache_se
   --data "$RULESET" >/dev/null
 echo "  ok (2 rules: cache anon HTML edge_ttl=$EDGE_TTL browser_ttl=0; then bypass dynamic/admin/session)"
 
+# Web Analytics (RUM). Always off. Privacy is the primary goal. A zone with RUM
+# on auto-injects static.cloudflareinsights.com/beacon.min.js into HTML. The
+# product site (pagefeather.dev) must not collect Cloudflare Insights. This call
+# keeps every zone this package manages at rum=off. It does not delete an
+# account-level Web Analytics site_info row; delete that in the dashboard or API
+# if one still exists for the zone.
+echo "== Web Analytics (RUM): off"
+cf_ok "rum off" PATCH "/zones/$ZONE_ID/settings/rum" --data '{"value":"off"}' >/dev/null
+echo "  ok (zone setting rum=off)"
+
 echo
 if [ "$MODE" = dedicated ]; then
   echo "Applied. Verify a cached anonymous page:"
   echo "  curl -sI https://$HOSTNAME/ | grep -iE 'cf-cache-status|age|cache-control'"
   echo "A growing Age header on repeat GETs = the ZONE edge is serving, the Worker is not invoked."
+  echo "Verify no Insights beacon:"
+  echo "  curl -sL https://$HOSTNAME/ | grep -E 'cloudflareinsights|data-cf-beacon' || echo 'no beacon'"
   echo "Reverse with: ZONE_ID=$ZONE_ID HOSTNAME=$HOSTNAME ACCOUNT_ID=$ACCOUNT_ID ./deploy/zone/destroy.sh"
 else
   echo "Applied (one zone-wide ruleset). Verify a cached anonymous tenant page:"
   echo "  curl -sI https://<tenant-host>/ | grep -iE 'cf-cache-status|age|cache-control'"
+  echo "Verify no Insights beacon:"
+  echo "  curl -sL https://<tenant-host>/ | grep -E 'cloudflareinsights|data-cf-beacon' || echo 'no beacon'"
   echo "Reverse the whole zone with: ZONE_ID=$ZONE_ID MODE=multitenant ./deploy/zone/destroy.sh"
 fi
 echo "NOTE (#205): edge_ttl=$EDGE_TTL means stale HTML until that many seconds without purge-on-publish. See README.md."

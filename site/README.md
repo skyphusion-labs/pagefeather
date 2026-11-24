@@ -49,6 +49,13 @@ stale at the edge until `EDGE_TTL` ends, or until someone purges by hand. Do not
 claim automatic purge for www.pagefeather.dev yet. Customer auto-apply of cache
 rules is later. This apply is the marketing site only.
 
+## Privacy
+
+The product site collects no Cloudflare Web Analytics / Insights. The zone
+setting `rum` stays off. The marketing theme does not embed
+`static.cloudflareinsights.com` or a `data-cf-beacon` script. Zone apply keeps
+RUM off; see [deploy/zone/README.md](../deploy/zone/README.md#web-analytics-rum-stays-off).
+
 ## Cutover
 
 Removing the theme from this repository does not change the live Worker by itself. The theme already on www.pagefeather.dev stays until the next deploy that runs with `IMPORT_CONTENT` from pagefeather-dev (or another path that still holds the theme). Keep a marketing checkout ready before that deploy.

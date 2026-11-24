@@ -129,7 +129,8 @@ Partial-support notes:
 
 - Deployed WordPress and WooCommerce admin screens inherit upstream behavior. We have not measured every admin screen with assistive technology on Pagefeather.
 - Third-party plugins and themes you add at deploy time are outside our default evaluation. Heavy plugins also hit memory and size limits ([How many plugins fit](docs/guide/limits.md#how-many-plugins-fit)).
-- Embedded third-party widgets on the marketing site are best-effort only.
+- Embedded third-party widgets on the marketing site are best-effort only. The
+  product site does not load Cloudflare Insights / Web Analytics beacons.
 
 ## Known limitations
 
