@@ -1,11 +1,11 @@
 variable "free_hyperdrive_token" {
-  description = "Free test account token with Hyperdrive Read and Write (file /Users/conrad/.cf-testing-hyperdrive.token)"
+  description = "Free test account token with Hyperdrive Read and Write (file $CF_TESTING_HYPERDRIVE_TOKEN_FILE, default $HOME/.cf-testing-hyperdrive.token)"
   type        = string
   sensitive   = true
 }
 
 variable "free_admin_token" {
-  description = "Free test account general token (file /Users/conrad/.cf-testing.token)"
+  description = "Free test account general token (file $CF_TESTING_TOKEN_FILE, default $HOME/.cf-testing.token)"
   type        = string
   sensitive   = true
 }

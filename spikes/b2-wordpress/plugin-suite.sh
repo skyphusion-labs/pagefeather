@@ -5,11 +5,20 @@
 # Usage: ./plugin-suite.sh [group-number ...]   (no number: all groups)
 # ENGINE=a runs approach A (MySQL through Hyperdrive) instead of B: envs a-free and
 # a-paid, OPcache primed against the local MariaDB (wp-a-local-mysql), results in a-*.jsonl.
-# Needs: ~/.cf-testing.token (Free account), ~/.wp-on-d1-paid.env, ~/.wp-on-d1-spike.env.
+# Needs: $CF_TESTING_TOKEN_FILE (default ~/.cf-testing.token, Free account),
+# $WP_ON_D1_PAID_ENV / $WP_ON_D1_SPIKE_ENV (defaults under $HOME). For ENGINE=a,
+# also $WP_A_LOCAL_ENV and $CLOUDFLARE_ENV_FILE (defaults under $HOME).
 set -uo pipefail
 cd "$(dirname "$0")"
 # The pinned Wrangler (deploy/wr, #371), never a global one.
 WR=${WR:-$(cd ../.. && pwd)/deploy/wr}
+CF_TESTING_TOKEN_FILE="${CF_TESTING_TOKEN_FILE:-$HOME/.cf-testing.token}"
+WP_ON_D1_PAID_ENV="${WP_ON_D1_PAID_ENV:-$HOME/.wp-on-d1-paid.env}"
+WP_ON_D1_SPIKE_ENV="${WP_ON_D1_SPIKE_ENV:-$HOME/.wp-on-d1-spike.env}"
+WP_A_LOCAL_ENV="${WP_A_LOCAL_ENV:-$HOME/.wp-a-local.env}"
+CLOUDFLARE_ENV_FILE="${CLOUDFLARE_ENV_FILE:-$HOME/cloudflare-mcp.env}"
+WP_A_FREE_ENV="${WP_A_FREE_ENV:-$HOME/.wp-a-free.env}"
+WP_A_PAID_ENV="${WP_A_PAID_ENV:-$HOME/.wp-a-paid.env}"
 GROUPS_=(
   "elementor"
   "jetpack"
@@ -21,12 +30,12 @@ GROUPS_=(
 )
 FREE_URL=https://wp-on-d1-spike.vivijure-coldrun.workers.dev
 PAID_URL=https://wp-on-d1-paid.skyphusion.workers.dev
-PREFIX=b; DEPLOY_FREE=free; DEPLOY_PAID=paid; ENVF_FREE=~/.wp-on-d1-spike.env; ENVF_PAID=~/.wp-on-d1-paid.env
+PREFIX=b; DEPLOY_FREE=free; DEPLOY_PAID=paid; ENVF_FREE=$WP_ON_D1_SPIKE_ENV; ENVF_PAID=$WP_ON_D1_PAID_ENV
 if [ "${ENGINE:-d1}" = a ]; then
   FREE_URL=https://wp-a-free.vivijure-coldrun.workers.dev
   PAID_URL=https://wp-a-paid.skyphusion.workers.dev
-  PREFIX=a; DEPLOY_FREE=a-free; DEPLOY_PAID=a-paid; ENVF_FREE=~/.wp-a-free.env; ENVF_PAID=~/.wp-a-paid.env
-  set -a; . /Users/conrad/.wp-a-local.env; set +a
+  PREFIX=a; DEPLOY_FREE=a-free; DEPLOY_PAID=a-paid; ENVF_FREE=$WP_A_FREE_ENV; ENVF_PAID=$WP_A_PAID_ENV
+  set -a; . "$WP_A_LOCAL_ENV"; set +a
   export WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="mysql://wp:${LOCAL_MYSQL_PASSWORD}@127.0.0.1:3307/wordpress"
   export DEV_ENV=a-local
 fi
@@ -43,11 +52,11 @@ for g in "${sel[@]}"; do
   echo "group $g: site.zip + opcache.zip = $size bytes"
   for env in ${ENVS:-free paid}; do
     if [ $env = free ]; then
-      dep=$(CLOUDFLARE_API_TOKEN=$(cat ~/.cf-testing.token) CLOUDFLARE_ACCOUNT_ID=32ce15b8adb82f5a85b67d6c46b28177 "$WR" deploy --env $DEPLOY_FREE 2>&1)
+      dep=$(CLOUDFLARE_API_TOKEN=$(cat "$CF_TESTING_TOKEN_FILE") CLOUDFLARE_ACCOUNT_ID=32ce15b8adb82f5a85b67d6c46b28177 "$WR" deploy --env $DEPLOY_FREE 2>&1)
       url=$FREE_URL; envf=$ENVF_FREE
     else
-      deployenv=~/.wp-on-d1-paid.env; [ "$PREFIX" != a ] || deployenv=/Users/conrad/cloudflare-mcp.env
-      dep=$( (set -a; . $deployenv; set +a; CLOUDFLARE_ACCOUNT_ID=fabcb25d9c7eb087110ec474a03e50d2 "$WR" deploy --env $DEPLOY_PAID) 2>&1)
+      deployenv=$WP_ON_D1_PAID_ENV; [ "$PREFIX" != a ] || deployenv=$CLOUDFLARE_ENV_FILE
+      dep=$( (set -a; . "$deployenv"; set +a; CLOUDFLARE_ACCOUNT_ID=fabcb25d9c7eb087110ec474a03e50d2 "$WR" deploy --env $DEPLOY_PAID) 2>&1)
       url=$PAID_URL; envf=$ENVF_PAID
     fi
     if ! grep -q 'Current Version ID' <<<"$dep"; then

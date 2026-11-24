@@ -6,7 +6,7 @@
 # that especially and test that out".
 
 variable "free_api_token" {
-  description = "Free test account token with D1 Write (file /Users/conrad/.cf-testing.token)"
+  description = "Free test account token with D1 Write (file $CF_TESTING_TOKEN_FILE, default $HOME/.cf-testing.token)"
   type        = string
   sensitive   = true
 }

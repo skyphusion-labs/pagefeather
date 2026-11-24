@@ -38,7 +38,7 @@ T3=$(mkzip theme orphan-child 1.0 "/* Template: not-here */")
 T4=$(mkzip theme deep-css-theme 1.0 "/*
 Theme Name: Deep
 */
-$(/opt/homebrew/bin/python3 -c 'print("a{}\n" * 3000)' 2>/dev/null || python3 -c 'print("a{}\n" * 3000)')
+$(python3 -c 'print("a{}\n" * 3000)')
 	/* TEMPLATE: COVER */")
 {
   echo "# plugins"; echo "good-plugin 1.0 $P1 10"; echo "other-plugin 2.0 $P2 10"
