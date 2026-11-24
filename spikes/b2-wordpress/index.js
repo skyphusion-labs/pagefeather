@@ -2558,7 +2558,10 @@ async function r2opInner(op) {
 		}
 		if (op.op === 'list') {
 			const l = await B.list({ prefix: op.prefix, delimiter: '/', limit: op.limit || 1000 });
-			return { ok: true, keys: l.objects.map((o) => o.key), prefixes: l.delimitedPrefixes };
+			const out = { ok: true, keys: l.objects.map((o) => o.key), prefixes: l.delimitedPrefixes };
+			// #1424: PHP treats only boolean false as a full page. A missing value marks nobody absent.
+			if (typeof l.truncated === 'boolean') out.truncated = l.truncated;
+			return out;
 		}
 		return { ok: false, error: 'unknown r2 op' };
 	} catch (e) {
