@@ -34,15 +34,16 @@ Approach A works with any MySQL (or MariaDB) server that Hyperdrive can reach. F
 | --- | --- | --- | --- | --- |
 | **Azure Database for MySQL** (Flexible Server) | Rows `A (approach-A object cache, live)` (2026-11-08) and the 2026-11-09 load rows. Standard_B1ms, West US 2, Hyperdrive in the same region. | About 9 to 17 ms warm; checkout 5.1 s (313 queries) | Best measured speed; the ceiling for scale is the server size you buy | A separate bill. Azure MySQL 8.0 ships a strict `sql_mode` that breaks the WordPress install; set `sql_mode=ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION`. |
 | **PlanetScale** (a2, billed through Cloudflare) | Row `A2 (PlanetScale, single Cloudflare bill)` (2026-11-09); earlier probes in [approach-a2.md](approach-a2.md). PS-10, AWS us-west-2. | About 17 ms warm reads; checkout 9.1 s (336 queries, 27 ms per query) | One Cloudflare bill and no separate invoice. Reads are nearly as fast as Azure; checkout is about 1.5 to 1.8 times slower. | Vitess is strict. Use the direct host (`us-west.connect.psdb.cloud`), not the optimized host (about 27 ms more per query). A `CREATE TABLE` can lag across pooled connections, so install and WooCommerce activation may need a re-run. 11 of 12 on `woo.py`. $39 a month for PS-10. |
-| **Self-managed MariaDB or MySQL on a VPS** | Rows `A` (2026-11-05 and 2026-11-06): Vultr box in Chicago, MariaDB 10.11, SSL. See [approach-a.md](approach-a.md). | 6 to 11 ms by host name | Cheapest ($10 a month for the test box); you control everything | You patch and back up the server. Give Hyperdrive the host name, not the IP address (6 times slower by IP). The port needs SSL and a firewall that admits Cloudflare ranges, or a Tunnel (about 90 ms more per query). |
+| **Self-managed MariaDB or MySQL on a VPS** | Rows `A` (2026-11-05 and 2026-11-06): Vultr box in Chicago, MariaDB 10.11, SSL. See [approach-a.md](approach-a.md). | 6 to 11 ms by host name | Measured test path only. Not the recommended host. | You patch and back up the server. Give Hyperdrive the host name, not the IP address (6 times slower by IP). The port needs SSL and a firewall that admits Cloudflare ranges, or a Tunnel (about 90 ms more per query). |
 | **External or existing MySQL** | Same path as the VPS rows. | Depends on distance | Reuse a database you already run | Place the Worker near it. Hyperdrive must reach it over SSL or a Tunnel. |
 
 How to choose:
 
 - **Want one bill and the least to manage?** PlanetScale through Cloudflare.
 - **Want the fastest checkout and have credit or a cloud account?** Azure, co-located with the Hyperdrive region.
-- **Want the lowest cost and can run a server?** A VPS.
-- **Already have a database?** Use it.
+- **Already have a managed MySQL?** Use it with `MYSQL=external`.
+
+Do not stand up a VPS only for MySQL. Prefer Azure or PlanetScale. The VPS row above is a measured record, not a recommendation.
 
 Two rules hold for every provider:
 

@@ -43,7 +43,7 @@ Manual: [Provision from a Worker](framework.md#provision-from-a-worker).
 
 You want a real WooCommerce store. Use the MySQL option (approach A). PHP runs in a Worker. Your MySQL is reached through Hyperdrive. Deploy with `deploy/deploy.sh` and `VARIANT=a`.
 
-- Workers Paid only ($5 a month), plus your MySQL server ([cost](cost.md)). A `MYSQL=vultr` box is $10 a month.
+- Workers Paid only ($5 a month), plus a managed MySQL host ([cost](cost.md)). Prefer Azure or PlanetScale.
 - This path does not run on Workers Free. The installer stops at the 10 ms CPU limit.
 - Checkout and admin screens have measured timing limits ([limits](limits.md)).
 
