@@ -2,9 +2,9 @@
 
 This page moved to [A multi-tenant WordPress and WooCommerce framework on Workers for Platforms](guide/framework.md).
 
-## Two kinds of site: `wp` (b-dosql, the store path) and `a` (the scale-out path)
+## Two kinds of site: `wp` (b-dosql, light storefront) and `a` (the real store path)
 
-The current text is [Two kinds of site: `wp` (b-dosql, the store path) and `a` (the scale-out path)](guide/framework.md#two-kinds-of-site-wp-b-dosql-the-store-path-and-a-the-scale-out-path).
+The current text is [Two kinds of site: `wp` (b-dosql, light storefront) and `a` (the real store path)](guide/framework.md#two-kinds-of-site-wp-b-dosql-light-storefront-and-a-the-real-store-path).
 
 ## Default integrations
 
