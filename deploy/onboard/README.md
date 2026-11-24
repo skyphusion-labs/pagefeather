@@ -31,9 +31,8 @@ ever printed or written.
     CLOUDFLARE_API_TOKEN    a token that can create Hyperdrive configs (and, for
                             planetscale, call the PlanetScale integration)
 
-These come from the environment. Account id is never hard-coded (IaC rule). For
-the operator's own run the token is the privileged account token at
-`/Users/conrad/cloudflare-mcp.env` (`CLOUDFLARE_API_TOKEN`).
+These come from the environment. Account id is never hard-coded (IaC rule).
+Export `CLOUDFLARE_API_TOKEN` from your local secrets store before you run.
 
 ## The contract handed to Phase 2
 
@@ -71,9 +70,7 @@ Azure Database for MySQL Flexible Server. The server `sql_mode` is relaxed to
 `ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION` (idempotent) with the `az`
 CLI, then a Hyperdrive config is made (SSL, caching off).
 
-    AZ_MYSQL_PASSWORD                      required (the live value is in
-                                           /Users/conrad/wpref-azure-mysql.env
-                                           as AZ_MYSQL_PASSWORD)
+    AZ_MYSQL_PASSWORD                      required (export from your local secrets store)
     AZ_MYSQL_HOST       default wpref-mysql.mysql.database.azure.com
     AZ_MYSQL_DATABASE   default wordpress
     AZ_MYSQL_USER       default wpadmin
@@ -117,7 +114,7 @@ Terraform (Vultr instance, a firewall group open on 3306 to Cloudflare's ranges
 only, a Cloudflare DNS record, MariaDB with REQUIRE SSL via cloud-init). Then a
 Hyperdrive config to the host.
 
-    VULTR_API_KEY       required (the key at /Users/conrad/.vultr-api.key)
+    VULTR_API_KEY       required (export from your local secrets store)
     MYSQL_ZONE_ID       required (skyphusion.org = 3b58b52bd324332fb56b3ab685588c76)
     MYSQL_HOST          required (the db hostname in that zone, e.g.
                         mysql-acme.skyphusion.org)
