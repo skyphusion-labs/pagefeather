@@ -83,6 +83,7 @@ MU_PLUGINS=(
 	php/php-fatal-line.php
 	php/option-prime.php
 	php/code-lock-notice.php
+	php/demo-store-notice.php
 	php/mem-trace.php
 	php/permalinks.php
 	php/plain-404.php

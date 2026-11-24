@@ -149,9 +149,10 @@ hd_delete() {
   gone "Hyperdrive config $(hd_name "$s") ($id)" "/hyperdrive/configs/$id"
 }
 
-# kind_a_refuse <site>: after site_vars. update, import, restore and schedule are b-dosql's: they snapshot, load or
+# kind_a_refuse <site>: after site_vars. update, restore and schedule are b-dosql's: they snapshot, load or
 # restore the object's own SQLite, or arm its snapshot cron. A kind a site's data is the owner's MySQL, so each is
-# refused before any step. site update for kind a (a rebuild and re-upload, no data step) is #1319's follow-up.
+# refused before any step. site import is allowed for kind a: it runs deploy/import.sh with VARIANT=a (Hyperdrive
+# /_sqlimport), not the SQLite path. site update for kind a (a rebuild and re-upload, no data step) is #1319's follow-up.
 kind_a_refuse() {
   [ "${REC_KIND:-b-dosql}" = a ] || return 0
   echo "site $1 is kind a (approach A, the owner's MySQL): this command works on a b-dosql site's own database and is refused. Nothing was changed." >&2

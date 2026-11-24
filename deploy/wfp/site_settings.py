@@ -63,7 +63,7 @@ SETTINGS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECY
             "MAIL_FROM", "MAIL_FROM_NAME", "MAIL_ALLOWED_TO", "PHP_LOCATION", "WP_VECTORIZE_SEARCH", "OPCACHE_SPLIT", "OPCACHE_REMOTE", "SITE_REMOTE",
             "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES", "PAGE_CACHE_PRODUCT_TTL", "WOO_EXTRAS",
             "OBJECT_CALL_DEADLINE_S", "OBJECT_START_BY_S", "OBJECT_DISCONNECT_SHED", "HTTP_ALLOW_HOSTS", "PDF_INVOICE", "PAGE_CACHE_TTL",
-            "OBSERVABILITY", "SITE_TITLE", "DB_QUERY_TIMEOUT_MS")
+            "OBSERVABILITY", "SITE_TITLE", "DB_QUERY_TIMEOUT_MS", "DEMO_LOCK")
 # #1050: the OBSERVABILITY values a record may hold. full carries client IPs: per run only.
 RECORDABLE = {"OBSERVABILITY": ("0", "1")}
 # Three states (#564): absent from the environment means the default list; present, including
@@ -96,7 +96,7 @@ DROPPABLE_VARS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PH
                   "MAIL_FROM_NAME", "OPCACHE_REMOTE", "SITE_REMOTE",
                   "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES", "PAGE_CACHE_PRODUCT_TTL", "WOO_EXTRAS",
                   "OBJECT_CALL_DEADLINE_S", "OBJECT_START_BY_S", "OBJECT_DISCONNECT_SHED", "PAGE_CACHE_TTL", "SITE_TITLE",
-                  "DB_QUERY_TIMEOUT_MS")  # each renders its var only when on (#563, #569, #667, #759, #1098, #1364)
+                  "DB_QUERY_TIMEOUT_MS", "DEMO_LOCK")  # each renders its var only when on (#563, #569, #667, #759, #1098, #1364)
 # HTTP_ALLOW_HOSTS is not droppable here: render_user always writes the var (the default list
 # when unset), so the live bindings cannot show that a custom list became the default (#564).
 

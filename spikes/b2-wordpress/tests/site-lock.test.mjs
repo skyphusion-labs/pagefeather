@@ -6,6 +6,7 @@ import { demoLocked, codeLocked, lockDefines } from '../site-lock.mjs';
 const MODS = "define('DISALLOW_FILE_MODS', true);";
 const EDIT = "define('DISALLOW_FILE_EDIT', true);";
 const NOTICE = "define('SKYPHUSION_CODE_LOCK', true);";
+const DEMO = "define('PAGEFEATHER_DEMO_STORE', true);";
 
 test('the demo lock is on only for DEMO_LOCK=on', () => {
 	assert.equal(demoLocked({ DEMO_LOCK: 'on' }), true);
@@ -30,9 +31,9 @@ test('CODE_LOCK does not turn on the demo lock, so a one-click site keeps its ma
 	assert.equal(demoLocked({ CODE_LOCK: 'on' }), false);
 });
 
-test('a demo site gets exactly the two defines it had before #406', () => {
-	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on' }), [MODS, EDIT]);
-	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on', CODE_LOCK: 'on' }), [MODS, EDIT]);
+test('a demo site gets the file-mod defines and PAGEFEATHER_DEMO_STORE', () => {
+	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on' }), [MODS, EDIT, DEMO]);
+	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on', CODE_LOCK: 'on' }), [MODS, EDIT, DEMO]);
 });
 
 test('a one-click site gets the two defines and the notice constant', () => {
@@ -42,7 +43,7 @@ test('a one-click site gets the two defines and the notice constant', () => {
 test('the default is locked: only CODE_LOCK=off renders no lock defines (#458)', () => {
 	assert.deepEqual(lockDefines({}), [MODS, EDIT, NOTICE], 'a site with no var renders the lock constants (#458)');
 	assert.deepEqual(lockDefines({ DEMO_LOCK: 'off', CODE_LOCK: 'off' }), [], 'only an explicit CODE_LOCK=off renders nothing');
-	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on', CODE_LOCK: 'off' }), [MODS, EDIT], 'a demo keeps its lock');
+	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on', CODE_LOCK: 'off' }), [MODS, EDIT, DEMO], 'a demo keeps its lock and demo notice');
 });
 
 // index.js cannot be imported under node (it loads php-wasm), so these read its
@@ -79,11 +80,16 @@ test('approach A (index-a-lean.js) boots through index.js, so its wp-config gets
 	assert.ok(!/^\s*if \(/m.test(before.split('\n').pop()), 'the lock defines line is gated');
 });
 
-// The notice mu-plugin must be in the build, and it must be inert without the constant.
+// The notice mu-plugins must be in the build, and they must be inert without their constants.
 test('build.sh copies the code lock notice into mu-plugins', () => {
 	const build = readFileSync(new URL('../build.sh', import.meta.url), 'utf8');
 	// The mu-plugin list is one entry per line (MU_PLUGINS, build.sh), copied into mu-plugins in one cp.
 	assert.match(build, /MU_PLUGINS=\(\n(\t[^\n]+\n)*\tphp\/code-lock-notice\.php\n(\t[^\n]+\n)*\)\ncp "\$\{MU_PLUGINS\[@\]\}" "\$wp\/wp-content\/mu-plugins\/"/);
+});
+
+test('build.sh copies the demo store notice into mu-plugins', () => {
+	const build = readFileSync(new URL('../build.sh', import.meta.url), 'utf8');
+	assert.match(build, /MU_PLUGINS=\(\n(\t[^\n]+\n)*\tphp\/demo-store-notice\.php\n(\t[^\n]+\n)*\)\ncp "\$\{MU_PLUGINS\[@\]\}" "\$wp\/wp-content\/mu-plugins\/"/);
 });
 
 test('the notice mu-plugin returns first unless SKYPHUSION_CODE_LOCK is true', () => {
@@ -91,4 +97,13 @@ test('the notice mu-plugin returns first unless SKYPHUSION_CODE_LOCK is true', (
 	const guard = php.indexOf("if ( ! defined( 'SKYPHUSION_CODE_LOCK' ) || true !== SKYPHUSION_CODE_LOCK ) {");
 	assert.ok(guard >= 0, 'no constant guard');
 	assert.ok(guard < php.indexOf('add_action('), 'the guard must come before add_action');
+});
+
+test('the demo store notice returns first unless PAGEFEATHER_DEMO_STORE is true', () => {
+	const php = readFileSync(new URL('../php/demo-store-notice.php', import.meta.url), 'utf8');
+	const guard = php.indexOf("if ( ! defined( 'PAGEFEATHER_DEMO_STORE' ) || true !== PAGEFEATHER_DEMO_STORE ) {");
+	assert.ok(guard >= 0, 'no constant guard');
+	assert.ok(guard < php.indexOf('add_action('), 'the guard must come before add_action');
+	assert.ok(php.includes('This is a demo store of the Pagefeather framework.'), 'missing STE demo line');
+	assert.ok(!/sign up|pricing|buy now|subscribe/i.test(php), 'demo copy must not funnel or upsell');
 });

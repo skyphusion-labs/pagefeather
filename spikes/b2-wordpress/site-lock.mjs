@@ -22,11 +22,13 @@ export function codeLocked(env) {
 	return demoLocked(env) || !(!!env && env.CODE_LOCK === 'off');
 }
 
-// The wp-config lines the locks add. A demo site keeps exactly the two defines it had before
-// #406 (its own notice is the demo's); every other locked site also gets the notice constant.
+// The wp-config lines the locks add. A demo site keeps the two file-mod defines it had before
+// #406, plus PAGEFEATHER_DEMO_STORE for the home-page demo notice (php/demo-store-notice.php).
+// Every other locked site also gets the code-lock notice constant.
 export function lockDefines(env) {
 	if (!codeLocked(env)) return [];
 	const lines = ["define('DISALLOW_FILE_MODS', true);", "define('DISALLOW_FILE_EDIT', true);"];
-	if (!demoLocked(env)) lines.push("define('SKYPHUSION_CODE_LOCK', true);");
+	if (demoLocked(env)) lines.push("define('PAGEFEATHER_DEMO_STORE', true);");
+	else lines.push("define('SKYPHUSION_CODE_LOCK', true);");
 	return lines;
 }
