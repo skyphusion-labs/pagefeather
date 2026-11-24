@@ -21,6 +21,8 @@ check "loader branches on kind a for /_sqlimport counts" "$(grep -c '_sqlimport?
 check "loader replaces kind a admin password via /_sqlimport UPDATE" "$(grep -c 'admin password replaced (kind a /_sqlimport' "$LOADER")" 1
 check "loader fails loud when kind a password update fails" "$(grep -c 'dump admin password may remain' "$LOADER")" 1
 check "loader no longer skips kind a password replace" "$(grep -c 'admin password replace SKIPPED' "$LOADER")" 0
+check "loader initializes skipped for admin_login_check under set -u" "$(grep -c 'fails=0; skipped=0' "$LOADER")" 1
+check "loader closing line admits when login was skipped" "$(grep -c 'every check that ran passed; \$skipped not checked' "$LOADER")" 1
 check "site import sets VARIANT=a for kind a" "$(awk '/^import_one\(\)/,/^}/' "$SITE" | grep -c 'IMP_VARIANT=a')" 1
 check "site import refuses SQLITE on kind a" "$(awk '/^import_one\(\)/,/^}/' "$SITE" | grep -c 'not SQLITE')" 1
 check "kind_a_refuse no longer claims import is refused" "$(grep -c 'site import is allowed for kind a' "$ROOT/deploy/wfp/kind-a.sh")" 1

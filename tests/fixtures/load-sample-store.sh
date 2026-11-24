@@ -76,7 +76,7 @@ echo "sample store: dump attachment rows: $natt; the fixture ships no media file
 tfr site workspace select default >/dev/null
 hdr() { printf 'header = "x-spike-token: %s"\n' "$(cat "$WORK/tok")"; }
 
-fails=0
+fails=0; skipped=0
 want() { if [ "$2" = "$3" ]; then echo "  ok   $1: $2"; else echo "  FAIL $1: got $2, want $3" >&2; fails=$((fails + 1)); fi; }
 
 # The admin password: this site's own, in WordPress's native form (wp_check_password: "$wp" +
@@ -124,4 +124,5 @@ else
   want "users (wp_users)" "$(c wp_users)" "$SAMPLE_STORE_USERS"
 fi
 [ "$fails" = 0 ] || { echo "sample store: $fails check(s) failed on $s" >&2; exit 1; }
-echo "sample store: loaded into $s ($O), every check passed"
+if [ "$skipped" = 0 ]; then echo "sample store: loaded into $s ($O), every check passed"
+else echo "sample store: loaded into $s ($O), every check that ran passed; $skipped not checked (see skip lines above)"; fi
