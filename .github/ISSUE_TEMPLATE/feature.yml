@@ -1,0 +1,52 @@
+name: Feature
+description: Propose a capability or a clear improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Say the problem first. Then say what you want.
+        Keep one idea per issue when you can.
+        Do not paste secrets.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that is hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What you would like. A rough sketch is fine.
+    validations:
+      required: true
+  - type: dropdown
+    id: path
+    attributes:
+      label: Path (if known)
+      options:
+        - b-dosql (one site)
+        - b-dosql (Workers for Platforms)
+        - Approach A (Hyperdrive / MySQL)
+        - Engine / PHP
+        - Deploy scripts
+        - Conformance / tests
+        - Docs
+        - Unsure / all paths
+    validations:
+      required: false
+  - type: textarea
+    id: limits
+    attributes:
+      label: Limits you already know
+      description: State a limit next to a capability. Name the Cloudflare docs page and the date you read it, if you have them.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
