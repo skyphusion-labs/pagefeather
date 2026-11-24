@@ -26,7 +26,18 @@ You want more than one site on one account. Deploy with `deploy/wfp`, on Workers
 - A Workers for Platforms account costs $30 a month for two or more sites ([cost](cost.md#cost-of-a-pagefeather-workers-for-platforms-account)).
 - Each site still has the same uncached rate and WooCommerce limits as one site above.
 
-Manual: [Operator guide](operator.md).
+Manual: [Operator guide](operator.md). Framework detail (SaaS zone and the provisioning Worker): [framework](framework.md).
+
+### Provisioning Worker (HTTP)
+
+A Worker can mint sites over HTTP (`deploy/provision/worker.mjs`). This is not the Start here path. The poke invite uses the CLI paths above.
+
+- Code can mint `kind: wp` and `kind: a` ([#1456](https://github.com/skyphusion-labs/pagefeather/pull/1456)).
+- Free single-site through this Worker: **UNBUILT** (wrong surface).
+- Measured HTTP Path A after hardening: **UNBUILT** ([#1458](https://github.com/skyphusion-labs/pagefeather/issues/1458)). A Worker-made site is not the measured `deploy/wfp` site ([#328](https://github.com/skyphusion-labs/pagefeather/issues/328)).
+- Hyperdrive on Free: **Fail** (CPU limit).
+
+Manual: [Provision from a Worker](framework.md#provision-from-a-worker).
 
 ### A real store (MySQL)
 
