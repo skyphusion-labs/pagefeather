@@ -41,6 +41,39 @@ try {
 }
 ok('wranglerToml refuses a bad OBSERVABILITY', threw);
 
+// Bugbot on #1473: shell locals that site update / purge_budget_decide set must
+// reach the Node-spawned bash. A non-exported assignment in the parent is the
+// live shape; exporting on the node line is the fix.
+const purge = spawnSync('bash', ['-c', `
+  . deploy/wfp/lib.sh >/dev/null
+  f() {
+    PURGE_BUDGET_BIND=1
+    render_user one https://wp-one.sub.workers.dev
+  }
+  f
+`], { cwd: root, encoding: 'utf8', env: baseEnv });
+ok(
+  'thin render_user keeps a non-exported PURGE_BUDGET_BIND=1',
+  purge.status === 0
+    && /name = "PURGE_BUDGET"/.test(purge.stdout)
+    && /script_name = "pf-purge-budget"/.test(purge.stdout),
+);
+
+const allow = spawnSync('bash', ['-c', `
+  . deploy/wfp/lib.sh >/dev/null
+  f() {
+    local http_allow_mode=unset
+    local -x HTTP_ALLOW_HOSTS=
+    render_user one https://wp-one.sub.workers.dev
+  }
+  f
+`], { cwd: root, encoding: 'utf8', env: baseEnv });
+ok(
+  'thin render_user with http_allow_mode=unset keeps the default allow-list',
+  allow.status === 0
+    && /^HTTP_ALLOW_HOSTS = "\.wordpress\.org,\.woocommerce\.com,\.gravatar\.com"$/m.test(allow.stdout),
+);
+
 if (fail) {
   console.error(`${fail} failed, ${pass} passed`);
   process.exit(1);

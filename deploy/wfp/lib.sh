@@ -736,6 +736,12 @@ render_user() { # render_user <site> <origin>
     return 2
   fi
   # #328 PR 2: wranglerToml in Node is the TOML emitter; this is a thin call.
+  # render_user_parts runs in a Node-spawned bash. That child sees only exported
+  # env. site update keeps http_allow_mode as a non-exported local (#564), and
+  # purge_budget_decide sets PURGE_BUDGET_BIND in this shell without export (#699).
+  # Pass both on the node line so the child matches this shell.
+  http_allow_mode="${http_allow_mode:-env}" \
+  PURGE_BUDGET_BIND="${PURGE_BUDGET_BIND-}" \
   node "$ROOT/deploy/provision/wrangler-toml.mjs" --toml "$1" "$2"
 }
 # render_user_a <site> <origin> (#1319): the user Worker of a kind a site. render-conf.sh render_conf with
