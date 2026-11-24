@@ -1,0 +1,68 @@
+name: Bug
+description: Something in the engine, deploy path, or tests fails
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Pagefeather runs WordPress and WooCommerce on Cloudflare.
+        Do not paste secrets (API tokens, passwords, private keys, or cookie values).
+        A security problem belongs in SECURITY.md, not here.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What went wrong, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands and URLs help. Redact secrets.
+      placeholder: |
+        1. Deploy with VARIANT=...
+        2. Open ...
+        3. See ...
+    validations:
+      required: true
+  - type: dropdown
+    id: path
+    attributes:
+      label: Path
+      options:
+        - b-dosql (one site)
+        - b-dosql (Workers for Platforms)
+        - Approach A (Hyperdrive / MySQL)
+        - Engine / PHP
+        - Deploy scripts
+        - Conformance / tests
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: plan
+    attributes:
+      label: Cloudflare plan
+      options:
+        - Workers Free
+        - Workers Paid
+        - local (wrangler dev)
+        - Unknown
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit, tag, or Wrangler version
+      description: `git rev-parse HEAD`, a release tag, or the Wrangler version you used.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or errors
+      description: Paste only what a maintainer needs. Strip tokens and passwords.
+    validations:
+      required: false

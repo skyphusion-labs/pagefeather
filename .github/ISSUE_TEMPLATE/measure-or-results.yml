@@ -1,0 +1,80 @@
+name: Measure or results
+description: Record a real deploy and test, or ask for a measurement
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A result is measured only after a real deploy on that plan and a test.
+        A documentation page is not a measurement.
+        A third-party claim is not a measurement.
+        Record the row in `docs/results.md`.
+        Do not paste secrets. Test deploys stay on a `workers.dev` address.
+        Date, Wrangler, Command, and Result are required when you Add or Correct a row.
+        Leave them blank when you only request a measurement.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What is this issue for
+      options:
+        - Add a measured row (I have the data)
+        - Request a measurement (I do not have the data yet)
+        - Correct an earlier row (keep the old row; add a new one)
+    validations:
+      required: true
+  - type: dropdown
+    id: plan
+    attributes:
+      label: Plan
+      description: Use `local` only for `wrangler dev`. A local row does not change a README cell.
+      options:
+        - Workers Free
+        - Workers Paid
+        - local
+        - Other (say which in the notes)
+    validations:
+      required: true
+  - type: input
+    id: date-utc
+    attributes:
+      label: Date (UTC)
+      description: Fill when you have the data (required for Add and Correct). The day of the deploy and test, as YYYY-MM-DD.
+      placeholder: "2026-11-24"
+    validations:
+      required: false
+  - type: input
+    id: wrangler
+    attributes:
+      label: Wrangler version
+      description: Fill when you have the data (required for Add and Correct).
+      placeholder: "4.157.0"
+    validations:
+      required: false
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Fill when you have the data (required for Add and Correct). The exact deploy or test command. Redact account secrets.
+    validations:
+      required: false
+  - type: textarea
+    id: result
+    attributes:
+      label: Result
+      description: Fill when you have the data (required for Add and Correct). What happened. Include pass or fail counts, errors, and numbers you measured.
+    validations:
+      required: false
+  - type: input
+    id: matrix-id
+    attributes:
+      label: Matrix id (optional)
+      description: The approach id for the row (for example B, A, or b-dosql), if you know it.
+    validations:
+      required: false
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Link related issues. Say if a later row should correct this one. For a request, say what to measure and why.
+    validations:
+      required: false
