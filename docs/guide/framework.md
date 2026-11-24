@@ -125,7 +125,16 @@ curl -X POST https://<your-provisioning-worker>/ \
   --data '{"kind":"a","name":"store","domain":"<owned base>","database":"<32-hex Hyperdrive id>","placement":"azure:westus2"}'
 ```
 
-The caller chooses `kind` (`wp` or `a`), `name` and an owned `domain`. For `a` it also sends `database` and `placement`. The Worker keeps the pre-built bundle, the namespace, the KV id and the zone in its own trusted config. A caller cannot upload code or aim at another site's resources. The Worker never builds a bundle. **Hyperdrive on Workers Free is BLOCKED** (measured Fail: [results.md](../results.md) A Free 2026-11-05). Free single-site uses `deploy/deploy.sh`, not this Worker. A live HTTP Path A row is not yet in results.md (unmeasured). The hardening is in `deploy/provision/HARDENING.md`. The Worker also has a public `/demo` door (Turnstile, short-lived demo sites, `wp` only) that cleans up after itself.
+The caller chooses `kind` (`wp` or `a`), `name` and an owned `domain`. For `a` it also sends `database` and `placement`. The Worker keeps the pre-built bundle, the namespace, the KV id and the zone in its own trusted config. A caller cannot upload code or aim at another site's resources. The Worker never builds a bundle.
+
+**Honest labels for the poke announce.** This is not the Start here path. Prefer `deploy/deploy.sh` or `deploy/wfp` for a first site.
+
+- Code can mint `kind: wp` and `kind: a` ([#1456](https://github.com/skyphusion-labs/pagefeather/pull/1456)).
+- Worker as Free single-site: **UNBUILT** (wrong surface). Free one-site uses `deploy/deploy.sh` with `VARIANT=b-dosql`.
+- Measured HTTP Path A row after hardening: **UNBUILT** ([#1458](https://github.com/skyphusion-labs/pagefeather/issues/1458)). A Worker-made site is not the measured `deploy/wfp` site ([#328](https://github.com/skyphusion-labs/pagefeather/issues/328)).
+- Hyperdrive on Workers Free: **Fail** (measured; [results.md](../results.md) A Free 2026-11-05). `plan: "free"` with `kind: "a"` is refused.
+
+The hardening is in `deploy/provision/HARDENING.md`. The Worker also has a public `/demo` door (Turnstile, short-lived demo sites, `wp` only) that cleans up after itself.
 
 ## The SaaS zone (one-time setup)
 
