@@ -11,6 +11,9 @@
 #       CLOUDFLARE_API_TOKEN=... ACCOUNT_ID=... ZONE_ID=... HOSTNAME=wp.example.com \
 #         WORKER_SERVICE=my-worker ./deploy/zone/apply.sh
 #
+#     Optional: EDGE_TTL=<seconds> (default 3600, max 31536000). The product
+#     marketing site uses EDGE_TTL=31536000 (CR #1461).
+#
 #   MODE=multitenant: ONE SaaS home zone (e.g. skyphusionwp.dev) terminates MANY
 #     tenant hostnames. apply.sh writes ONE zone-wide cache ruleset for all
 #     tenants and does NOT attach a Custom Domain (the provisioning core attaches
@@ -44,6 +47,14 @@ MODE=${MODE:-dedicated}
 ACCOUNT_ID=${ACCOUNT_ID:-${CLOUDFLARE_ACCOUNT_ID:-}}
 : "${ACCOUNT_ID:?set ACCOUNT_ID (or CLOUDFLARE_ACCOUNT_ID)}"
 : "${ZONE_ID:?set ZONE_ID (the zone that owns the hostname(s))}"
+
+# Edge TTL in seconds. Default 3600 (product default for bring-your-own sites).
+# Cap at Cloudflare's one-year maximum (31536000). Product marketing site uses max.
+EDGE_TTL=${EDGE_TTL:-3600}
+if ! [[ "$EDGE_TTL" =~ ^[1-9][0-9]*$ ]] || [ "$EDGE_TTL" -gt 31536000 ]; then
+  echo "EDGE_TTL must be an integer from 1 to 31536000, got $EDGE_TTL" >&2
+  exit 2
+fi
 
 # One Cloudflare API call. Prints the body, then a final line with the HTTP code.
 # The token goes to curl in a -K config on a pipe, never in argv.
@@ -87,19 +98,23 @@ case "$MODE" in
 
     echo "== 2. Cache ruleset on the http_request_cache_settings phase entrypoint"
     # PUT the phase entrypoint REPLACES its rules, so re-running converges to exactly
-    # these two rules (idempotent). HOSTNAME is substituted into the template.
-    RULESET=$(sed "s/@HOSTNAME@/$HOSTNAME/g" "$SCRIPT_DIR/cache-ruleset.json")
+    # these two rules (idempotent). HOSTNAME and EDGE_TTL are substituted into the template.
+    # __EDGE_TTL__ is an unquoted number placeholder so the JSON stays numeric.
+    RULESET=$(sed -e "s/@HOSTNAME@/$HOSTNAME/g" -e "s/__EDGE_TTL__/$EDGE_TTL/g" "$SCRIPT_DIR/cache-ruleset.json")
     ;;
   multitenant)
     : "${CACHE_EXPR:?set CACHE_EXPR (the tenant-host match expression) in MODE=multitenant}"
     echo "== SaaS home zone: one zone-wide cache ruleset for all tenants (zone $ZONE_ID)"
     echo "   cache rule scope: $CACHE_EXPR"
     echo "   (no Custom Domain attach: the provisioning core attaches tenant hostnames)"
-    # Substitute CACHE_EXPR into the multitenant template with python so an
+    # Substitute CACHE_EXPR and EDGE_TTL into the multitenant template with python so an
     # expression containing quotes, slashes or ampersands cannot break the JSON.
-    RULESET=$(CACHE_EXPR="$CACHE_EXPR" python3 -c '
+    # The file is not valid JSON until __EDGE_TTL__ is replaced (it is a bare number token).
+    RULESET=$(CACHE_EXPR="$CACHE_EXPR" EDGE_TTL="$EDGE_TTL" python3 -c '
 import json, os, sys
-tpl = json.load(open(os.path.join(sys.argv[1], "cache-ruleset.multitenant.json")))
+raw = open(os.path.join(sys.argv[1], "cache-ruleset.multitenant.json")).read()
+raw = raw.replace("__EDGE_TTL__", os.environ["EDGE_TTL"])
+tpl = json.loads(raw)
 for r in tpl.get("rules", []):
     if r.get("expression") == "@CACHE_EXPR@":
         r["expression"] = os.environ["CACHE_EXPR"]
@@ -119,7 +134,7 @@ esac
 # request that matched both.
 cf_ok "cache ruleset" PUT "/zones/$ZONE_ID/rulesets/phases/http_request_cache_settings/entrypoint" \
   --data "$RULESET" >/dev/null
-echo "  ok (2 rules: cache anon HTML edge_ttl=3600 browser_ttl=0; then bypass dynamic/admin/session)"
+echo "  ok (2 rules: cache anon HTML edge_ttl=$EDGE_TTL browser_ttl=0; then bypass dynamic/admin/session)"
 
 echo
 if [ "$MODE" = dedicated ]; then
@@ -132,7 +147,7 @@ else
   echo "  curl -sI https://<tenant-host>/ | grep -iE 'cf-cache-status|age|cache-control'"
   echo "Reverse the whole zone with: ZONE_ID=$ZONE_ID MODE=multitenant ./deploy/zone/destroy.sh"
 fi
-echo "NOTE (#205): edge_ttl=3600 means up to 1h stale without purge-on-publish. See README.md."
+echo "NOTE (#205): edge_ttl=$EDGE_TTL means stale HTML until that many seconds without purge-on-publish. See README.md."
 
 # ---------------------------------------------------------------------------
 # Optional levers, NOT applied by this script. They are paid, manual, or opt-in.

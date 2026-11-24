@@ -144,8 +144,9 @@ still matches only the cache rule.)
    the Worker is the origin behind the proxied hostname.
 2. Two rules in the zone `http_request_cache_settings` phase (from
    `cache-ruleset.json`), in this order:
-   - Rule 1 caches anonymous HTML for the host at the edge, `edge_ttl` 3600,
-     `browser_ttl` 0.
+   - Rule 1 caches anonymous HTML for the host at the edge. Default
+     `edge_ttl` is 3600. Set `EDGE_TTL` (1 to 31536000) to change it.
+     `browser_ttl` is 0.
    - Rule 2 (LAST) bypasses the cache for the paths, cookies and methods listed
      above, overriding rule 1 for any dynamic/session request.
 
@@ -267,10 +268,21 @@ request bypasses, and a publish purges then re-caches.
    Verify in the Cloudflare dashboard (or Trace) that the purge call hit only the
    changed URLs, not `purge_everything`, for a single-post edit.
 
+## Product site (www.pagefeather.dev, CR #1461)
+
+The marketing host uses this package with `EDGE_TTL=31536000` (one year, the
+Cloudflare Cache Rules maximum). Command: see [site/README.md](../../site/README.md).
+
+**Purge on update is UNBUILT for that site.** Max TTL is set on purpose. A
+publish can stay stale until TTL ends or a manual purge. Do not document
+purge-on-publish as live for pagefeather.dev until the purge path is wired and
+measured there.
+
 ## Purge on publish (issue #205, the other half of #18)
 
-`edge_ttl` is 3600, so without a purge a published change is stale at the edge
-for up to one hour. The purge-on-publish path (proven, in `spikes/b2-wordpress/`)
+`edge_ttl` defaults to 3600, so without a purge a published change is stale at
+the edge for up to one hour (or longer when `EDGE_TTL` is higher). The
+purge-on-publish path (proven, in `spikes/b2-wordpress/`)
 closes that:
 
 - `php/zone-cache-purge.php` (a gated mu-plugin) hooks `transition_post_status`

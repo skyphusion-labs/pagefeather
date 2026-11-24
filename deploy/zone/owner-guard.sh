@@ -33,7 +33,9 @@ import json, sys, os
 d = os.environ["GUARD_DIR"]
 ours = set()
 for f in ("cache-ruleset.json", "cache-ruleset.multitenant.json"):
-    for r in json.load(open(os.path.join(d, f))).get("rules", []):
+    # Templates use bare __EDGE_TTL__ (not valid JSON until apply.sh substitutes).
+    raw = open(os.path.join(d, f)).read().replace("__EDGE_TTL__", "1")
+    for r in json.loads(raw).get("rules", []):
         ours.add(r.get("description", ""))
 try:
     rules = (json.load(sys.stdin).get("result") or {}).get("rules") or []

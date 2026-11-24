@@ -10,7 +10,7 @@
         "cache": true,
         "edge_ttl": {
           "mode": "override_origin",
-          "default": 3600
+          "default": __EDGE_TTL__
         },
         "browser_ttl": {
           "mode": "override_origin",
