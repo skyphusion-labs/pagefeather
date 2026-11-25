@@ -10,6 +10,7 @@ import {
   ensureCacheVersions,
   deleteNamespaceScript, deleteR2Bucket, deleteProxiedHostname, deleteCustomHostname,
   deleteKVNamespaceByTitle, deleteQueueByName, deleteVectorizeIndex,
+  updateNamespaceScript,
 } from './ops.mjs';
 import { upsertSite, readSite, removeSite } from './registry.mjs';
 import { mediaBucketName, ocKvNamespaceName, emailQueueName, emailDlqName, searchIndexName } from './wp-site-config.mjs';
@@ -259,4 +260,44 @@ export async function removeNamespaceSite(ctx, { ns, kvId, hostname, name, entry
     catch (err) { if (!keepGoing) throw err; left.push({ part: st.part, what: st.what, error: (err && err.message) || String(err) }); }
   }
   return { dryRun: false, plan, done, left, dataLoss: REMOVE_DATA_LOSS };
+}
+
+// #782: split a bindings read into the non-secret bindings (re-sent as read) and the
+// secret names (kept by keep_bindings, never re-sent, and never copied into a log).
+// A secret_text entry is dropped whole, including any text the read happened to carry.
+export function splitLiveBindings(live) {
+  if (!Array.isArray(live)) throw new Error('updateNamespaceSite: the live bindings are not a list');
+  const bindings = [];
+  const secrets = [];
+  for (const b of live) {
+    if (!b || typeof b !== 'object' || typeof b.type !== 'string' || typeof b.name !== 'string' || !b.name) {
+      throw new Error('updateNamespaceSite: a live binding has no type or name, so it cannot be kept');
+    }
+    if (b.type === 'secret_text') { secrets.push(b.name); continue; }
+    bindings.push(JSON.parse(JSON.stringify(b)));
+  }
+  return { bindings, secrets };
+}
+
+// Re-upload one core-path user Worker from a new bundle. Bindings come from the live
+// script, not from a fresh render, so a live binding cannot be dropped and a plain_text
+// value cannot be rewritten. Secrets are not in the upload. No migrations block.
+export const UPDATE_KEEP_BINDINGS = ['secret_text'];
+export async function updateNamespaceSite(ctx, {
+  ns, name, mainModule, modules, compatibilityDate, compatibilityFlags = [],
+  liveBindings, placement,
+}) {
+  assertValidName(name);
+  if (!Array.isArray(liveBindings) || liveBindings.length === 0) {
+    throw new Error(`updateNamespaceSite: site-${name} returned no bindings. Refusing to upload, which would drop them. Nothing was uploaded.`);
+  }
+  const { bindings, secrets } = splitLiveBindings(liveBindings);
+  const script = `site-${name}`;
+  await updateNamespaceScript(ctx, {
+    ns, name: script, mainModule, modules, bindings,
+    compatibilityDate, compatibilityFlags,
+    keepBindings: UPDATE_KEEP_BINDINGS,
+    placement: placement || undefined,
+  });
+  return { script, bindings, secrets, keepBindings: UPDATE_KEEP_BINDINGS };
 }

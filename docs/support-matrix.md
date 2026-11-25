@@ -122,9 +122,9 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 | feature | `deploy/deploy.sh` | `deploy/wfp` | one-click |
 |---|---|---|---|
 | PDF invoices | fixed in #769 (merged 2026-11-16); not yet measured live | fixed in #769 (merged 2026-11-16); not yet measured live | yes (#765) |
-| Update a site | yes: `CODE_ONLY=1` in `.github/workflows/deploy-workers.yml` (the live sites `woocap`, `zarapo`) | yes: `deploy/wfp/site update` (#642; the #724 throwaways, 2026-11-16; ggc.sh) | no: add only (#765; an issue for it is being filed) |
+| Update a site | yes: `CODE_ONLY=1` in `.github/workflows/deploy-workers.yml` (the live sites `woocap`, `zarapo`) | yes: `deploy/wfp/site update` (#642; the #724 throwaways, 2026-11-16; ggc.sh) | built, not measured live: `node deploy/provision/cli.mjs update <name>` (#782). It re-uploads the user Worker and keeps the live bindings and the secret names. It does not snapshot or roll back |
 | PHP overflow pool (approach A) | OFF by default since #1277 (it was on, #1119): the pool's objects run far from the database, about 3x the cost per query and a net loss of about 2 s per moved request at the median on cf759hl; `PHP_OVERFLOW=1` opts in (a queued request then runs on a Durable Object pool instead of waiting behind a long run in its isolate; about 38 USD per million moved requests, [cost](approach-a-overflow.md#cost)) | not applicable (b-dosql) | not built: a one-click approach A site has no `PhpRuntime` binding |
-| Remove a site | not measured (`deploy/destroy.sh`) | yes: `deploy/wfp/site remove` (`pf704`, #704; the #724 throwaways) | built, not measured live: add, and remove (#782); update not built |
+| Remove a site | not measured (`deploy/destroy.sh`) | yes: `deploy/wfp/site remove` (`pf704`, #704; the #724 throwaways) | built, not measured live: `node deploy/provision/cli.mjs remove <name> [--delete-data]` (#782). Without `--delete-data` it deletes nothing and exits non-zero |
 
 ## Limited, and why
 
@@ -218,9 +218,9 @@ A store that shows exact stock numbers can use a lower `PAGE_CACHE_PRODUCT_TTL` 
 
 The feature needs the `BROWSER` binding. `deploy/wfp` and `deploy.sh` rendered none, so only one-click sites could make invoices. #769 adds `PDF_INVOICE=on` to both paths. It merged on 2026-11-16 (`5a94341`). It is not yet measured live on those paths.
 
-### One-click can add and remove a site, not update it (#765, #782)
+### One-click can add, update and remove a site (#765, #782)
 
-The one-click CLI implements `site add` and, since #782, `site remove`. Remove is built and unit-tested against a stand-in API. It is **not yet measured on a live site**. `update` still refuses and names `deploy/wfp/site`, which cannot manage a one-click site. It waits on a live probe: does a re-upload keep a site's secrets and its data (#782).
+The one-click CLI implements `site add`, `site update` and `site remove`. Update re-uploads the user Worker. It keeps the live bindings and the secret names, and it sends no migrations block, so the Durable Object data stays. It does not snapshot and it does not roll back. Remove deletes nothing unless `--delete-data`. Without that flag it names the site code (the database lives there) and the media bucket, and it exits non-zero. Both are unit-tested against a stand-in API. Neither is measured on a live site. A re-upload that keeps a secret and a Durable Object row was measured on a throwaway namespace script (the #782 probe, 2026-11-17), not through this command, and not for every binding shape.
 
 ### A LIKE with a wildcard inside it, over 50 bytes, fails on SQLite (#805)
 

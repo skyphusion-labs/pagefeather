@@ -199,7 +199,7 @@ function provisionEnv(env, { kvId, subdomain }) {
 // the Hyperdrive configuration (the owner made both). Only called for a site that
 // did not exist before this request (the anti-clobber check above it proved the
 // front door was not someone else's Worker). Returns what could not be removed.
-async function undoStore(ctx, { name, kvId, namespace, hostname }) {
+export async function undoStore(ctx, { name, kvId, namespace, hostname }) {
   const left = [];
   const step = async (what, fn) => { try { await fn(); } catch (e) { left.push(`${what} (reference ${logged(`undo ${what}`, (e && e.stack) || e)})`); } };
   await step('the front door', async () => {

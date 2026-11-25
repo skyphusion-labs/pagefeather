@@ -88,6 +88,40 @@ export async function scriptExists(ctx, { name, ns }) {
   throw opError('scriptExists', name, r);
 }
 
+// #782: the bindings of a namespace user Worker, read back the way deploy/wfp does
+// (bindings.py GET .../scripts/site-<name>/bindings). Null when the script is absent.
+// A non-list answer throws: an update must not upload when it cannot see what to keep.
+export async function namespaceScriptBindings(ctx, { ns, name }) {
+  const r = await cfFetch(ctx.token, 'GET',
+    `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}/bindings`,
+    { fetchImpl: ctx.fetchImpl });
+  if (r.status === 404) return null;
+  if (!r.ok || !Array.isArray(r.result)) throw opError('namespaceScriptBindings', name, r);
+  return r.result;
+}
+
+// #782: compatibility_date and compatibility_flags of a dispatch-namespace script.
+// Script details (the metadata), not GET .../settings: a settings read can answer
+// an older version (#1063). The registry entry recorded at add does not store
+// these fields.
+// GET /accounts/{account_id}/workers/dispatch/namespaces/{ns}/scripts/{name}
+// https://developers.cloudflare.com/api/resources/workers_for_platforms/subresources/dispatch/subresources/namespaces/subresources/scripts/methods/get/
+// Fields: result.script.compatibility_date and result.script.compatibility_flags.
+// Null when the script is absent (404, or the ghost result.script === null).
+export async function namespaceScriptCompat(ctx, { ns, name }) {
+  const r = await cfFetch(ctx.token, 'GET',
+    `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}`,
+    { fetchImpl: ctx.fetchImpl });
+  if (r.status === 404) return null;
+  if (!r.ok) throw opError('namespaceScriptCompat', name, r);
+  const script = r.result && r.result.script;
+  if (!script || typeof script !== 'object') return null;
+  return {
+    compatibilityDate: script.compatibility_date,
+    compatibilityFlags: script.compatibility_flags,
+  };
+}
+
 // 3. A Worker secret. Namespace script when ns is set, else a standalone Worker.
 // PUT replaces, so it is idempotent.
 export async function putSecret(ctx, { script, ns, name, text }) {
@@ -190,6 +224,30 @@ export async function deployNamespaceScript(ctx, {
     `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}`,
     { body: form, fetchImpl: ctx.fetchImpl });
   if (!r.ok) throw opError('deployNamespaceScript', name, r);
+  return { name, ns };
+}
+
+// #782: re-upload a namespace user Worker. The caller passes the live non-secret
+// bindings and keepBindings (the probe: ["secret_text"] keeps every secret of that
+// type, and the secret values are not sent). No migrations block: re-sending the
+// applied tag is refused (412, 10079), and omitting it keeps the Durable Object data.
+export async function updateNamespaceScript(ctx, {
+  ns, name, mainModule, modules, bindings = [], compatibilityDate, compatibilityFlags = [],
+  keepBindings, placement,
+}) {
+  const metadata = {
+    main_module: mainModule,
+    compatibility_date: compatibilityDate,
+    compatibility_flags: compatibilityFlags,
+    bindings,
+  };
+  if (keepBindings && keepBindings.length) metadata.keep_bindings = keepBindings;
+  if (placement) metadata.placement = placement;
+  const form = buildScriptForm(metadata, modules);
+  const r = await cfFetch(ctx.token, 'PUT',
+    `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}`,
+    { body: form, fetchImpl: ctx.fetchImpl });
+  if (!r.ok) throw opError('updateNamespaceScript', name, r);
   return { name, ns };
 }
 

@@ -14,6 +14,8 @@ ok('add rejects a demo-lane name (caller cannot pick the demo lane)', throws(() 
 ok('add rejects a missing name', throws(() => parseArgs(['add', '--kind', 'wp'])));
 ok('unknown command rejected', throws(() => parseArgs(['frobnicate'])));
 ok('list and remove are recognized commands', parseArgs(['list']).cmd === 'list' && parseArgs(['remove', 'x']).cmd === 'remove');
+ok('update <name> parses, with an optional placement', (() => { const a = parseArgs(['update', 'acme']); const b = parseArgs(['update', 'acme', '--placement', 'azure:westus2']); return a.cmd === 'update' && a.name === 'acme' && a.placement === undefined && b.placement === 'azure:westus2'; })());
+ok('update refuses a bad name', throws(() => parseArgs(['update', 'Bad_Name'])));
 ok('genSecret is hex of the requested length', /^[0-9a-f]{64}$/.test(genSecret(32)) && /^[0-9a-f]{48}$/.test(genSecret(24)));
 ok('two genSecret calls differ', genSecret() !== genSecret());
 

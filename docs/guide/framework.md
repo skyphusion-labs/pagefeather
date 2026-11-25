@@ -103,7 +103,11 @@ node deploy/provision/cli.mjs add --kind wp blog
 
 A store is the same kind of site. You turn on WooCommerce inside the site, as you would on any WordPress host.
 
-`add` is idempotent and does only its own site. It creates the media bucket, deploys the namespace script with the site's secrets inside the same upload, writes the KV routing entry and places the SaaS zone's routing record. `cli.mjs` implements `add` and `hostname` only. The build of `BDOSQL_BUNDLE_DIR` (a flat directory of the bundle's modules) is not documented yet; #328 replaces it.
+`add` is idempotent and does only its own site. It creates the media bucket, deploys the namespace script with the site's secrets inside the same upload, writes the KV routing entry and places the SaaS zone's routing record. `cli.mjs` implements `add`, `hostname`, `remove` and `update`. The build of `BDOSQL_BUNDLE_DIR` (a flat directory of the bundle's modules) is not documented yet; #328 replaces it.
+
+`remove <name>` deletes nothing unless you pass `--delete-data`. Without that flag the command names the data it kept (the site code, which holds the database, and the media bucket) and exits non-zero. With the flag it removes the custom hostname, the DNS record, the user Worker, the object's cache namespace, the email queues, the search index and the media bucket, and the site-map entry last. The Analytics Engine dataset has no delete, so it stays. A name with no site-map entry is refused before any delete.
+
+`update <name>` re-uploads the user Worker from `BDOSQL_BUNDLE_DIR` (or `A_BUNDLE_DIR` for approach A). It keeps the live bindings and the secret names. It does not send the secret values again. It does not send a migrations block, so the database in the Durable Object stays. It refuses when the live script is missing. It does not snapshot the database and it does not roll back. An approach A site also needs `--placement <aws|gcp|azure>:<region>`. This path is not measured on a live site. The reference deployment's update, with its snapshot and rollback, is `deploy/wfp/site update`.
 
 ## Provision from a Worker
 

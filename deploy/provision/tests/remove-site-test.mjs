@@ -148,10 +148,13 @@ function live({ entry = true, sticky = false } = {}) {
 const ENV = { WFP_SAAS_ZONE_ID: 'ZONE', WFP_KV_ID: 'MAP', WFP_NAMESPACE: 'NS', WP_HOSTNAME: 'acme.skyphusionwp.dev' };
 {
   const L = live(); const lines = [];
-  const r = await removeCommand(L.ctx, parseArgs(['remove', 'acme']), ENV, { out: (x) => lines.push(String(x)) });
+  let threw = null;
+  try { await removeCommand(L.ctx, parseArgs(['remove', 'acme']), ENV, { out: (x) => lines.push(String(x)) }); }
+  catch (e) { threw = e; }
   const txt = lines.join('\n');
   ok('cli dry run: only reads, never deletes', !L.calls.some((c) => c.startsWith('DELETE')));
-  ok('cli dry run: prints the plan, the data-loss warning and how to go on', /site code and database/.test(txt) && /database/.test(txt) && /--delete-data/.test(txt) && r.dryRun === true);
+  ok('cli dry run: prints the plan, the data-loss warning and how to go on', /site code and database/.test(txt) && /database/.test(txt) && /--delete-data/.test(txt));
+  ok('cli dry run: stops before the data and names what it kept', threw !== null && /Kept: site code and database/.test(threw.message) && /media bucket/.test(threw.message) && /Nothing was deleted/.test(threw.message));
 }
 {
   const L = live({ entry: false }); let threw = null;

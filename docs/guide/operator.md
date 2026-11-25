@@ -156,6 +156,22 @@ curl -sS -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\nheader = "x-ad
 
 A good answer is `{"ok":true,"user":"admin"}`. No token, or a wrong token, is refused.
 
+## A SaaS-zone site (the provisioning CLI)
+
+The commands above are `deploy/wfp/site`. They manage a site that has a Terraform workspace. A site made on a SaaS zone (`WFP_SAAS_ZONE_ID` set) has no workspace. Use `deploy/provision/cli.mjs` for that site. With no SaaS zone, that CLI refuses and names `deploy/wfp/site`.
+
+```sh
+node deploy/provision/cli.mjs update blog
+node deploy/provision/cli.mjs remove blog                 # deletes nothing; exits non-zero
+node deploy/provision/cli.mjs remove blog --delete-data   # removes the site, including its database and media
+```
+
+`update` re-uploads the user Worker from the bundle directory you set (`BDOSQL_BUNDLE_DIR`, or `A_BUNDLE_DIR` for approach A). It keeps the bindings that are live now, and it keeps the secret names. It does not send the secret values again. It does not send a migrations block, so the database inside the Durable Object stays. It refuses when that Worker is not in the namespace. It does not snapshot the database, and it does not roll back a bad upload. An approach A site also needs `--placement <aws|gcp|azure>:<region>`, so the upload does not leave the Worker unplaced. `--placement none` is refused. The compatibility date and the compatibility flags come from the live script (its script details), not from the bundle on disk. `--compat-date <YYYY-MM-DD>` and `--compat-flags <a,b>` change them on purpose, and the command prints the old and new values.
+
+`remove` without `--delete-data` deletes nothing. It prints the parts, names the data it kept (the site code, which holds the database, and the media bucket), and exits non-zero. With `--delete-data` it removes the custom hostname, the DNS record, the user Worker (and the database in it), the cache namespace, the email queues, the search index, the media bucket, and the site-map entry last. The Analytics Engine dataset has no delete, so it stays. A name that is not in the site map is refused before any delete.
+
+This CLI path is built and unit-tested. It is not measured on a live site. The reference path's update, with its snapshot and its rollback, stays `deploy/wfp/site update`.
+
 ## Where the detail is
 
 - The design and the measured results: issue #35 and `docs/wfp.md`.
