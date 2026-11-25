@@ -170,7 +170,7 @@ node deploy/provision/cli.mjs remove blog --delete-data   # removes the site, in
 
 `remove` without `--delete-data` deletes nothing. It prints the parts, names the data it kept (the site code, which holds the database, and the media bucket), and exits non-zero. With `--delete-data` it removes the custom hostname, the DNS record, the user Worker (and the database in it), the cache namespace, the email queues, the search index, the media bucket, and the site-map entry last. The Analytics Engine dataset has no delete, so it stays. A name that is not in the site map is refused before any delete.
 
-This CLI path is built and unit-tested. It is not measured on a live site. The reference path's update, with its snapshot and its rollback, stays `deploy/wfp/site update`.
+This CLI path is built and unit-tested, and measured on a live throwaway 2026-11-24 (results.md row "#782 update round-trip"). The reference path's update, with its snapshot and its rollback, stays `deploy/wfp/site update`.
 
 ## Where the detail is
 
