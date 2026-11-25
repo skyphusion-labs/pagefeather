@@ -59,7 +59,12 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   `a` site (MEDIA/IMAGES/HYPERDRIVE/OC_KV/EMAIL + the object-cache, lazy-node and
   PHP_ENV-with-table-prefix vars, and a conditional HYPERDRIVE_SQL_MODE), matched
   against the b2-wordpress spike `[env.a-paid-lean]`. Drift tests check each set
-  against its authoritative generator.
+  against its authoritative generator. `siteNames` (#328 PR 1) is the one table of
+  derived resource names.
+- `wrangler-toml.mjs` (#328 PR 2): `wranglerToml` emits the b-dosql user Worker
+  TOML. `deploy/wfp/lib.sh` `render_user` is a thin call into it. Bash helpers
+  still supply mail, allow-list, Turnstile, and observability fragments through
+  `render_user_parts`. Every golden stays byte-identical.
 - `demo-gate.mjs`: the `DEMO_GATE` Durable Object. It decides the demo rate and
   concurrency caps as one step, so parallel requests cannot all pass a stale count.
 - `demo.mjs` (#182 Path B): the public demo front door controls, per-IP + global

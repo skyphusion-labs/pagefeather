@@ -60,6 +60,8 @@ test('#1098 /_install passes SITE_TITLE, the site name, and the origin host', ()
 
 test('#1098 each variant can carry the site name, and SITE_TITLE is a recorded setting', () => {
 	const lib = readFileSync(join(root, 'deploy/wfp/lib.sh'), 'utf8');
+	// #328 PR 2: b-dosql SITE_NAME is emitted by wranglerToml; render_user is a thin call.
+	const wranglerToml = readFileSync(join(root, 'deploy/provision/wrangler-toml.mjs'), 'utf8');
 	const settings = readFileSync(join(root, 'deploy/wfp/site_settings.py'), 'utf8');
 	const site = readFileSync(join(root, 'deploy/wfp/site'), 'utf8');
 	const render = readFileSync(join(root, 'deploy/render-conf.sh'), 'utf8');
@@ -71,7 +73,8 @@ test('#1098 each variant can carry the site name, and SITE_TITLE is a recorded s
 	const deploySh = readFileSync(join(root, 'deploy/deploy.sh'), 'utf8');
 	const vendorServer = readFileSync(join(root, 'deploy/oneclick/vendor/provision/server-config.mjs'), 'utf8');
 	const vendorOps = readFileSync(join(root, 'deploy/oneclick/vendor/provision/ops.mjs'), 'utf8');
-	assert.match(lib, /SITE_NAME = "\$s"/);
+	assert.match(wranglerToml, /SITE_NAME = "\$\{parts\.site\}"/);
+	assert.match(lib, /wrangler-toml\.mjs/);
 	assert.match(lib, /SITE_TITLE/);
 	assert.match(settings, /"SITE_TITLE"/);
 	assert.match(site, /SITE_TITLE="\$\{SITE_TITLE:-\}"/);
