@@ -127,7 +127,7 @@ KIND=a PLACEMENT=azure:westus2 MYSQL_HOST=<server> MYSQL_DATABASE=<db> MYSQL_USE
 - **No scheduled snapshot.** `/_dbsnapshot` dumps a `b-dosql` site's own SQLite. A kind a site's data is the owner's MySQL, and the owner backs it up. The site's dispatcher has an empty cron list.
 - **`site add` refuses before any step** when:
   - an input is missing or bad (`MYSQL_*`, `PLACEMENT`);
-  - `WFP_CUSTOM_DOMAIN=1` is set (phase A only, for now);
+  - `WFP_CUSTOM_DOMAIN=1` is set without the operator override `ALLOW_KIND_A_CUSTOM_DOMAIN=1` (phase A only, for now; the override exists for the ggc.sh Type A cutover, #1471);
   - the account has no Hyperdrive config left (`HYPERDRIVE_CONFIG_LIMIT`, 25 on Workers Paid).
 - **After a failure** past the Hyperdrive config, `./deploy/wfp/site remove <name>` takes every part. Every remove looks for the config `wp-wfp-<name>` and the namespace `wp-wfp-<name>-oc` by name, whatever the site's kind, so a config left by a failed add (even one that stopped before its workspace) is found and deleted, not left holding one of the account's 25.
 - **`site update`, `import`, `restore` and `schedule` refuse a kind a site.** They snapshot, load or restore a `b-dosql` site's own database. `site update` for kind a (a rebuild and re-upload with no data step) is a follow-up.
