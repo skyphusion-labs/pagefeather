@@ -30,7 +30,7 @@ This is a young project. Some parts are measured and solid. Some are still being
 - **The MySQL option runs WordPress and a real store on Workers Paid.** It needs an external MySQL server. A first request on a cold isolate can cost 3 to 9 s more at the client ([#1169](https://github.com/skyphusion-labs/pagefeather/issues/1169)). Checkout and admin timing limits are on the [limits](docs/guide/limits.md) page.
 - **How many plugins fit** is a per-request memory limit on the heaviest admin pages ([How many plugins fit](docs/guide/limits.md#how-many-plugins-fit)). You add plugins when you deploy, not from wp-admin ([plugins and themes](docs/guide/plugins-and-themes.md)).
 
-A live example: [ggc.sh](https://ggc.sh) is a WooCommerce store on this framework. Guest storefront pages are cached at the edge. Cart, checkout, account, and logged-in pages are never cached.
+Live examples, all on this framework: [pagefeather.dev](https://pagefeather.dev) is a WordPress site with the built-in database. [wispress.dev](https://wispress.dev) is a WooCommerce store with the built-in database. [ggc.sh](https://ggc.sh) is a WooCommerce store with MySQL through Hyperdrive. Guest storefront pages are cached at the edge. Cart, checkout, account, and logged-in pages are never cached.
 
 ## Pick a doc path
 
