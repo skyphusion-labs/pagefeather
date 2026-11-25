@@ -93,7 +93,9 @@ a_inputs_check() {
   [[ "$MYSQL_USER" =~ ^[A-Za-z0-9_.@-]{1,80}$ ]] || { echo "MYSQL_USER must be a user name" >&2; return 2; }
   [ -n "${PLACEMENT:-}" ] || { echo "KIND=a needs PLACEMENT, the database region (for example azure:westus2), so the site runs next to it (#1054)" >&2; return 2; }
   ( . "$WFP/../render-conf.sh" >/dev/null 2>&1; placement_check ) || return 2
-  [ "${WFP_CUSTOM_DOMAIN:-0}" != 1 ] || { echo "KIND=a runs on phase A (workers.dev) only for now: WFP_CUSTOM_DOMAIN=1 is refused (#1319)" >&2; return 2; }
+  # ALLOW_KIND_A_CUSTOM_DOMAIN=1: operator override for an apex Custom Domain on kind a
+  # (ggc.sh Type A cutover, #1471). Default remains refuse.
+  [ "${WFP_CUSTOM_DOMAIN:-0}" != 1 ] || [ "${ALLOW_KIND_A_CUSTOM_DOMAIN:-0}" = 1 ] || { echo "KIND=a runs on phase A (workers.dev) only for now: WFP_CUSTOM_DOMAIN=1 is refused (#1319); the operator override is ALLOW_KIND_A_CUSTOM_DOMAIN=1 (#1471)" >&2; return 2; }
   return 0
 }
 # hd_limit_check: refuse before any step when the account has no Hyperdrive config left for one more site.
