@@ -3862,9 +3862,17 @@ export class PhpRuntime extends DurableObject {
 		const spikeOk = await tokensEqual(req.headers.get('x-spike-token'), env.SPIKE_TOKEN);
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		// MySQL import (#31, #551). The front Worker forwards here when PHP_IN_DO=on,
-		// because this isolate holds the MySQL client (index-a-lean.js). No client
-		// (b-dosql, SQLite in the object): sqlImport answers 404, as before. The token
-		// was checked above; sqlImport checks it again. The prefix rule is unchanged.
+		// because this isolate holds the MySQL client (index-a-lean.js). On WfP kind a,
+		// a streamed bulk import crosses the Durable Object request's I/O context and
+		// can fail after replace=1 has already dropped the tables (#1478). Refuse before
+		// reading or applying the body; the operator can load the prepared SQL with a
+		// MySQL client connected directly to the provider database. Counts and import
+		// updates through this route are unavailable there too. No client (b-dosql,
+		// SQLite in the object): sqlImport answers 404, as before. The token was checked
+		// above; sqlImport checks it again. The prefix rule is unchanged.
+		if (url.pathname === '/_sqlimport' && env.PHP_IN_DO === 'on' && env.DB_IN_DO !== 'on') {
+			return new Response('bulk MySQL import through /_sqlimport is unavailable on this approach A deployment; use a MySQL client connected directly to the provider database. See deploy/import/README.md#approach-a-on-wfp', { status: 409, headers: { 'cache-control': 'no-store' } });
+		}
 		if (url.pathname === '/_sqlimport') return sqlImport(req, env, url, dbHandler);
 		// Spike: the URL the object got, and the origin it uses.
 		if (url.pathname === '/_origin') return Response.json({ objectUrl: raw.url, publicOrigin: origin, used: url.href });
