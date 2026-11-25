@@ -28,7 +28,10 @@ export function codeLocked(env) {
 export function lockDefines(env) {
 	if (!codeLocked(env)) return [];
 	const lines = ["define('DISALLOW_FILE_MODS', true);", "define('DISALLOW_FILE_EDIT', true);"];
-	if (demoLocked(env)) lines.push("define('PAGEFEATHER_DEMO_STORE', true);");
-	else lines.push("define('SKYPHUSION_CODE_LOCK', true);");
+	if (demoLocked(env)) {
+		if (env.DB_IN_DO === 'on') lines.push("define('PAGEFEATHER_DEMO_VARIANT', 'b-dosql');");
+		else if (env.HYPERDRIVE) lines.push("define('PAGEFEATHER_DEMO_VARIANT', 'hyperdrive');");
+		lines.push("define('PAGEFEATHER_DEMO_STORE', true);");
+	} else lines.push("define('SKYPHUSION_CODE_LOCK', true);");
 	return lines;
 }
