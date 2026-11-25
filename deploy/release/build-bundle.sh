@@ -78,6 +78,9 @@ if [ "$engine" = a ]; then
   ( cd "$APP"
     [ -d node_modules ] || npm ci --silent
     ./prepare.sh || { echo "prepare.sh failed: the loader was not rebuilt"; exit 1; }
+    # build/ is gitignored: on a clean clone nothing has made it yet, and the log
+    # redirect below would fail before opcache-a.sh runs (#1483).
+    mkdir -p build
     # TRACE follows the pack flag, so the packs are cut from OPCACHE_A's file trace.
     TRACE=${OPCACHE_REMOTE:-0} ./opcache-a.sh > build/opcache-a.log 2>&1 || { echo "opcache-a.sh failed:"; tail -25 build/opcache-a.log; exit 1; }
     tail -2 build/opcache-a.log
