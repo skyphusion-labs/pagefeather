@@ -394,6 +394,16 @@ ok "deploy-upload.sh uses --secrets-file, not secret bulk" "$(grep -q -- '--secr
 ok "the deployments read is curl -K with a process substitution, not -H Authorization" "$(
   grep -q 'workers/scripts/\$NAME/deployments' "$U" && grep -q -- '-K <(printf' "$U" && ! grep -q -- '-H "Authorization' "$U" && echo 1 || echo 0
 )"
+# #1476 review: the cron-schedules source must sit outside the CODE_ONLY terraform branch and before
+# the readback call, or a code-only deploy calls an undefined cron_schedules_readback and fails
+# loudly after a successful upload (the pre-#1476 arrangement, since 1f03dcd).
+ok "deploy.sh sources cron-schedules.sh outside the CODE_ONLY terraform branch, before the readback" "$(awk '
+  /^if \[ "\$CODE_ONLY" != 1 \]; then$/ && !b {b=NR}
+  b && !e && /^else$/ {e=NR}
+  /^\. .*cron-schedules\.sh/ {s=NR}
+  /cron_schedules_readback/ && !r {r=NR}
+  END {print (s && r && s < r && !(b && e && s > b && s < e)) ? 1 : 0}
+' "$D")"
 
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]

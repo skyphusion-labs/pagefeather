@@ -58,12 +58,12 @@ LIT = re.compile(r'\'([^\'\\$]*)\'|"([^"\\$]*)"')
 
 def _pruned(path, kind):
     """True when prune-php-tree.sh removes such a file from the PHP tree: a plugin keeps its .js and .svg, a theme keeps
-    every .css, and a .min.css always stays."""
+    every .css and every .txt (PHP may readfile theme llms.txt and similar), and a .min.css always stays."""
     if not PRUNED.search(path) or path.endswith('.min.css'):
         return False
     if kind == 'plugins' and (path.endswith('.js') or path.endswith('.svg')):
         return False
-    if kind == 'themes' and path.endswith('.css'):
+    if kind == 'themes' and (path.endswith('.css') or path.endswith('.txt')):
         return False
     return True
 

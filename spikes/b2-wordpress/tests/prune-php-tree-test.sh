@@ -12,6 +12,7 @@ W="$T/wordpress"
 mk() { mkdir -p "$(dirname "$W/$1")"; echo x > "$W/$1"; }
 for f in index.php wp-includes/js/wp-emoji-loader.min.js wp-includes/js/wp-embed.min.js wp-includes/js/jquery.js \
          wp-includes/images/w-logo-blue.png wp-content/themes/tt5/style.css wp-content/themes/tt5/other.css \
+         wp-content/themes/tt5/llms.txt wp-content/themes/tt5/license.txt \
          wp-content/themes/tt5/screenshot.webp wp-content/plugins/woocommerce/woocommerce.php \
          wp-content/plugins/woocommerce/assets/images/placeholder-attachment.webp \
          wp-content/plugins/woocommerce/assets/images/placeholder.webp wp-content/plugins/woocommerce/assets/images/icon.png \
@@ -84,6 +85,7 @@ ok "#1208: a plugin stylesheet no PHP reads still goes" "$(gone wp-content/plugi
 ok "#1208: a read the build cannot resolve is NOTED (file and line), not guessed" "$(grep -q 'renderer.php:8' "$T/out" && grep -qi 'note' "$T/out" && echo 1 || echo 0)"
 ok ".min.css stays, an unminified .css goes" "$([ "$(has wp-admin/css/common.min.css)$(gone wp-admin/css/common.css)" = 11 ] && echo 1 || echo 0)"
 ok "PHP and a plugin readme: the php stays, the .txt goes" "$([ "$(has index.php)$(has wp-content/plugins/woocommerce/woocommerce.php)$(gone wp-content/plugins/woocommerce/readme.txt)" = 111 ] && echo 1 || echo 0)"
+ok "a theme llms.txt and license.txt stay (PHP may readfile them for /llms.txt)" "$([ "$(has wp-content/themes/tt5/llms.txt)$(has wp-content/themes/tt5/license.txt)" = 11 ] && echo 1 || echo 0)"
 ok "build.sh prunes through prune-php-tree.sh (one rule, not two)" "$(grep -qE '^\./prune-php-tree\.sh "\$wp"' "$HERE/build.sh" && ! grep -q -- "-name '\*\.webp'.*-delete" "$HERE/build.sh" && echo 1 || echo 0)"
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]

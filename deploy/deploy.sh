@@ -282,7 +282,6 @@ this_inputs=$(deploy_inputs_value)
 inputs_check "$TF" "$NAME" || exit 2
 # shellcheck source=lib/media-guard.sh
 . "$ROOT/deploy/lib/media-guard.sh"
-. "$ROOT/deploy/lib/cron-schedules.sh"
 media_guard "$TF" "$NAME" "sites/$NAME.tfvars" || exit 2
 # Hyperdrive checks the database when it makes its config, and a new MySQL box
 # needs a few minutes (packages, MariaDB, SSL): retry for up to 10 minutes.
@@ -296,6 +295,9 @@ else
   log "code only: no Terraform for $NAME; media bucket ${MEDIA_BUCKET:-none}"
   BUCKET=$([ "$MEDIA" = 1 ] && echo "$MEDIA_BUCKET" || true)
 fi
+# Cron readback below runs for CODE_ONLY too. Source outside the Terraform branch.
+# shellcheck source=lib/cron-schedules.sh
+. "$ROOT/deploy/lib/cron-schedules.sh"
 # record_deploy_inputs <base64>: write this run's inputs into the site's state. Only after the upload
 # (c1: after its deploy) has succeeded. The data-plane apply above kept the previous record, so a failure
 # at fetch, or anywhere before the upload, leaves that record byte for byte (#1428). The value is the one
