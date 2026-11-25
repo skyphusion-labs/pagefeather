@@ -126,7 +126,7 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   `WFP_COMPAT` or from a file in the bundle directory. `--compat-date <YYYY-MM-DD>`
   and `--compat-flags <a,b>` change them on purpose and the command prints the old
   and new values. A settings read (`GET .../settings`) is not used for this: it can
-  answer an older version (#1063). This is not measured on a live site.
+  answer an older version (#1063). Measured on a live throwaway 2026-11-24 (docs/results.md row "#782 update round-trip").
 - `provision.mjs`: `removeNamespaceSite(ctx, opts)` is the ONE removal (#782). The CLI's `remove`, the demo
   reaper (`demo.mjs` `teardownDemoSite`) and the one-click undo (`deploy/oneclick/sites.mjs` `undoStore`, with
   `keepGoing`) all call it, so they cannot drift on what a site is made of.
