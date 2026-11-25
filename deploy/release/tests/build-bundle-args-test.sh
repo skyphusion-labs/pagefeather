@@ -16,5 +16,12 @@ check "BUNDLE_ENGINE=a into a non-empty dir exits 2" "$rc" 2
 check "an a build id must carry -a" "$(grep -c 'a:\*) echo "build-bundle: build $build_id is not an ENGINE=a build"' "$HERE/build-bundle.sh")" 1
 check "a b-dosql bundle refuses an -a id" "$(grep -c 'is an ENGINE=a build, not b-dosql' "$HERE/build-bundle.sh")" 1
 check "the a main module is index-a-lean.js and its assets are prefixed a." "$(grep -c 'a) main=index-a-lean.js; prefix="a." ;;' "$HERE/build-bundle.sh")" 1
+# #1483: on a clean clone spikes/b2-wordpress/build does not exist, and the opcache-a log
+# redirect would fail before the script runs. The script must make the dir first.
+check "build/ is made before the opcache-a log redirect (#1483)" "$(awk '
+  /mkdir -p build/ {m=NR}
+  /> build\/opcache-a\.log/ && !r {r=NR}
+  END {print (m && r && m < r) ? 1 : 0}
+' "$HERE/build-bundle.sh")" 1
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]
