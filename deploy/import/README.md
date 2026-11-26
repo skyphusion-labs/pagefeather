@@ -151,6 +151,8 @@ The container stops (it does not start) if the seed download or its SHA-256 chec
 
 `a` is PHP in the Worker with MySQL through Hyperdrive: MariaDB on the box of `deploy/mysql` (`MYSQL=vultr`), or PlanetScale (`a2`, `MYSQL=external`). That MySQL accepts only Cloudflare, so the import goes through the site's Worker: `VARIANT=a URL=... NAME=... DUMP=site.sql ./deploy/import.sh`.
 
+**Workers for Platforms kind a exception (#1478):** this endpoint is refused before it reads the dump because the Durable Object request context can make a bulk load fail after `replace=1` has dropped the site's tables. Do not run `deploy/import.sh`, `deploy/wfp/site import`, or `tests/fixtures/load-sample-store.sh` for a kind a WfP site. For that deployment, load the prepared SQL with a MySQL client connected directly to the provider database, then verify the data through the database and the site's Store API. The provider must allow the client's source IP. This direct-client path is not automated by Pagefeather yet.
+
 1. Steps 1 and 2 as for `b-dosql` (the dump in SQLite gives the prefix and the site facts).
 2. `GET /_sqlimport?info=1`: the server version (MariaDB or MySQL) and its `max_allowed_packet`. The value comes from the server (`SELECT @@max_allowed_packet`, then `SHOW VARIABLES`, because through Vitess a system variable SELECT can return no row). With no value, the import stops: it never guesses a size.
 3. `mysql-prepare.py` makes the statements:
