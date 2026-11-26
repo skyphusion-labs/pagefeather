@@ -44,6 +44,11 @@ KV_ID=$(tfr shared output -raw kv_namespace_id 2>/dev/null) || { echo "no shared
 [ -n "$KV_ID" ] || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
 SUB=$(subdomain)
 has_ws() { list_sites | grep -qx "$1"; }
+# render-conf.sh reads Terraform outputs by this name (site.sh defines the same one).
+# A kind a update uses it for the recorded Hyperdrive id and the object cache id.
+out() { tfr site output -raw "$1"; }
+# The operator's PLACEMENT, before a kind a update assigns PLACEMENT for one site (#1502).
+WFP_PLACEMENT_RUN=${PLACEMENT-}
 # Update one site: snapshot the data, rebuild from the current tree, re-upload
 # the SAME script (same object, same data) when the build id or the config
 # hash differs, record both, and verify the new build is live and the site
@@ -59,6 +64,8 @@ has_ws() { list_sites | grep -qx "$1"; }
 # cannot be read as an ordinary failed update. While the mark is set, an update refuses (exit 2)
 # before it changes anything, so a partial database is never snapshotted as the new truth.
 # Exit codes: 0 updated or nothing to do, 1 failed (rolled back), 2 refused, 3 DATA RESTORE FAILED.
+# #1502: a kind a site skips the snapshot and the data restore. It rebuilds approach A and
+# re-uploads the user Worker. MySQL is not read or written. restore and schedule still refuse.
 # The work dir of one update (the recorded inputs, #379), removed however update_one ends.
 update_one() {
   local WDIR rc=0; WDIR=$(mktemp -d); chmod 700 "$WDIR"
@@ -79,7 +86,14 @@ update_one_inner() {
   # computed ones (lib.sh site_vars): recomputing them would re-key the entry
   # or replace the Custom Domain, and take the site off its domain.
   site_vars "$s" "$SUB" "$KV_ID" || return 1
-  kind_a_refuse "$s" || return 2  # #1319
+  # #1502: kind a update is allowed. Placement is this run's, else the live script's.
+  # Hyperdrive id stays the workspace record (out, at render). restore and schedule still refuse.
+  local SITE_KIND=b-dosql
+  if [ "${REC_KIND:-b-dosql}" = a ]; then
+    SITE_KIND=a
+    local PLACEMENT="${WFP_PLACEMENT_RUN-}"
+    kind_a_placement "$s" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
+  fi
   local ORIGIN="https://$REC_HOST"
   echo "site $s: hostname $REC_HOST, custom domain $REC_CD (recorded or computed by lib.sh site_vars)"
   local TOK bucket EP rollback new ok=1 snap_key="" live_hash=""
@@ -111,13 +125,21 @@ update_one_inner() {
   local SETTINGS_RECORDED=0
   echo "site $s: the recorded settings"
   keep_settings "$bucket" "$WDIR" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
+  # #1502 / #1499: a demo-sites file forces DEMO_LOCK=on. No file leaves the recorded value.
+  if [ "$SITE_KIND" = a ]; then kind_a_demo_lock "$s"; fi
   # #764: the RECORDED inputs can carry conformance content too: checked again on them, before the snapshot,
   # the build and the upload. #1002: after keep_settings, so the gate reads the settings this upload renders
   # (the recorded Turnstile values merged with this run's), not this run's environment alone.
   conformance_var "$s" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
   # #394: the remote packs by default, after the record (a recorded 0 opts out) and before the build.
+  # #1502: kind a uses approach A's defaults (OPCACHE_A primed), the same as site add.
+  if [ "$SITE_KIND" = a ]; then
+    a_remote_pack_defaults
+    echo "site $s: kind a, remote packs OPCACHE_A=${OPCACHE_A:-} OPCACHE_REMOTE=$OPCACHE_REMOTE SITE_REMOTE=$SITE_REMOTE"
+  else
   remote_pack_defaults
   echo "site $s: remote packs OPCACHE_REMOTE=$OPCACHE_REMOTE SITE_REMOTE=$SITE_REMOTE"
+  fi
   # Refuse before any change a build the live site cannot run (#377, lib.sh update_inputs_check).
   local woo code; woo=$(woo_active_for_build) || return 2
   code=$(store_api_code "$ORIGIN")
@@ -125,7 +147,10 @@ update_one_inner() {
   update_inputs_check "${rollback:-}" "$code" "$woo" "$(content_inputs_set)" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
   tree_clean_check || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
   [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows before: $(row_count "$ORIGIN" "$TOK")"
-  if [ "${NO_SNAPSHOT:-0}" != 1 ]; then
+  # #1502: kind a has no SQLite snapshot. The database is the owner's MySQL.
+  if [ "$SITE_KIND" = a ]; then
+    echo "site $s: kind a: no data snapshot (the database is the owner's MySQL)"
+  elif [ "${NO_SNAPSHOT:-0}" != 1 ]; then
     snap_key="$s/${rollback:-unknown}-$(date -u +%Y%m%dT%H%M%SZ).ndjson"
     echo "site $s: snapshot the data to $bucket/_snapshots/$snap_key"
     WFP_S3_ENDPOINT="$EP" NAMESPACE=$NAMESPACE KV_ID=$KV_ID SUB=$SUB \
@@ -146,11 +171,20 @@ update_one_inner() {
     echo "site $s: saved the live build $live_build for rollback"
   else
     rm -rf "$SAVED"; SAVED=""
+    if [ "$SITE_KIND" = a ]; then
+      echo "site $s: NO code rollback artifact: $why. If this update fails, the code is not rolled back. The database was not changed." >&2
+    else
     echo "site $s: NO code rollback artifact: $why. If this update fails, the data is restored but the code is not." >&2
+    fi
   fi
   echo "site $s: rebuild from the current tree"
   # Stop on a failed build, before any upload (#464): set -e is off here.
+  # #1502: kind a rebuilds approach A (build_a). b-dosql stays on build_dosql.
+  if [ "$SITE_KIND" = a ]; then
+    build_a || { echo "site $s: the build failed; nothing was uploaded" >&2; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
+  else
   build_dosql || { echo "site $s: the build failed; nothing was uploaded" >&2; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
+  fi
   new=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true)
   [ -n "$new" ] || { echo "site $s: the build left no build id; nothing was uploaded" >&2; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
   # Render before the decision (#421). The hash is this file plus the sorted
@@ -215,7 +249,11 @@ update_one_inner() {
     write_rollback_artifact "$bucket" "$new" "${rollback:-}"
     return "$rec_rc"
   fi
+  if [ "$SITE_KIND" = a ]; then
+    echo "site $s: ROLLING BACK the code to $rollback. The database was not changed." >&2
+  else
   echo "site $s: ROLLING BACK to $rollback. NOTE: a rollback drops any write made between the snapshot and now." >&2
+  fi
   local restore_failed=0 rb_left=0
   if [ -n "$snap_key" ]; then
     WFP_S3_ENDPOINT="$EP" python3 -I "${WFP_SNAPSHOT:-$WFP/snapshot.py}" dbrestore "$ORIGIN" "$TOK" "$bucket" "$snap_key" \
@@ -260,7 +298,11 @@ update_one_inner() {
     rm -rf "$W2"
     [ -n "$RBROOT" ] && rm -rf "$RBROOT"
   else
+    if [ "$SITE_KIND" = a ]; then
+      echo "site $s: no saved build artifact of this site's live build; the old code is NOT re-deployed. Deploy ${rollback:-the old build} by hand. The database was not changed." >&2
+    else
     echo "site $s: no saved build artifact of this site's live build; the old code is NOT re-deployed. Deploy ${rollback:-the old build} by hand. The data was restored from the snapshot." >&2
+    fi
   fi
   [ -n "$SAVED" ] && rm -rf "$SAVED"
   [ "$rb_left" = 1 ] && echo "site $s: the rollback is live, but a setting named above is NOT the recorded one (#1385). The next update compares against the record, so it will not see it: set it back by hand, or update with FORCE_UPLOAD=1 and the recorded values." >&2

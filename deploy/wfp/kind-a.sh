@@ -151,12 +151,69 @@ hd_delete() {
   gone "Hyperdrive config $(hd_name "$s") ($id)" "/hyperdrive/configs/$id"
 }
 
-# kind_a_refuse <site>: after site_vars. update, restore and schedule are b-dosql's: they snapshot, load or
-# restore the object's own SQLite, or arm its snapshot cron. A kind a site's data is the owner's MySQL, so each is
-# refused before any step. site import is allowed for kind a: it runs deploy/import.sh with VARIANT=a (Hyperdrive
-# /_sqlimport), not the SQLite path. site update for kind a (a rebuild and re-upload, no data step) is #1319's follow-up.
+# kind_a_refuse <site>: after site_vars. restore and schedule are b-dosql's: they restore the object's own
+# SQLite, or arm its snapshot cron. A kind a site's data is the owner's MySQL, so each is refused before any
+# step. site import is allowed for kind a: it runs deploy/import.sh with VARIANT=a (Hyperdrive /_sqlimport),
+# not the SQLite path. site update is allowed for kind a (#1502, the #1319 follow-up): it rebuilds approach A
+# and re-uploads the user Worker. It does not read or write MySQL.
 kind_a_refuse() {
   [ "${REC_KIND:-b-dosql}" = a ] || return 0
   echo "site $1 is kind a (approach A, the owner's MySQL): this command works on a b-dosql site's own database and is refused. Nothing was changed." >&2
   return 2
+}
+# kind_a_placement <site>: the placement a kind a update renders. This run's PLACEMENT wins when it is set.
+# Else the live script settings (placement.region, or smart). Exit 2 when neither is a value placement_check
+# accepts. The caller has changed nothing yet.
+kind_a_placement() {
+  local s=$1 out code region
+  if [ -n "${PLACEMENT:-}" ]; then
+    ( . "$WFP/../render-conf.sh" >/dev/null 2>&1; placement_check ) || return 2
+    echo "site $s: placement $PLACEMENT (this run)"
+    return 0
+  fi
+  out=$(api GET "/workers/dispatch/namespaces/$NAMESPACE/scripts/$(user_script "$s")/settings") || {
+    echo "site $s: kind a update needs PLACEMENT, and the live settings cannot be read. Nothing was changed." >&2
+    return 2
+  }
+  code=${out##*$'\n'}
+  if [ "$code" != 200 ]; then
+    echo "site $s: kind a update needs PLACEMENT, and the live settings answered HTTP $code. Nothing was changed." >&2
+    return 2
+  fi
+  region=$(printf '%s' "${out%$'\n'*}" | python3 -I -c 'import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+r = d.get("result") if isinstance(d, dict) else None
+p = r.get("placement") if isinstance(r, dict) else None
+if not isinstance(p, dict):
+    sys.exit(1)
+region = p.get("region") or ""
+mode = p.get("mode") or ""
+if region:
+    print(region)
+elif mode == "smart":
+    print("smart")
+else:
+    sys.exit(1)') || {
+    echo "site $s: kind a update needs PLACEMENT. The live script has no placement region. Set PLACEMENT (for example azure:westus2). Nothing was changed." >&2
+    return 2
+  }
+  PLACEMENT=$region
+  if ! ( . "$WFP/../render-conf.sh" >/dev/null 2>&1; placement_check ); then
+    PLACEMENT=
+    echo "site $s: the live placement $region is not a value this render accepts. Set PLACEMENT. Nothing was changed." >&2
+    return 2
+  fi
+  echo "site $s: placement $PLACEMENT (live script settings)"
+}
+# kind_a_demo_lock <site>: a file deploy/wfp/demo-sites/<name> forces DEMO_LOCK=on (#1499).
+# The file is optional. This tree may not have it yet. No file leaves DEMO_LOCK as it is
+# (the recorded value, or this run's).
+kind_a_demo_lock() {
+  [ -n "${1:-}" ] || return 0
+  [ -f "$WFP/demo-sites/$1" ] || return 0
+  DEMO_LOCK=on
+  echo "site $1: demo-sites marker sets DEMO_LOCK=on"
 }

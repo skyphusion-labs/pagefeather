@@ -130,7 +130,9 @@ KIND=a PLACEMENT=azure:westus2 MYSQL_HOST=<server> MYSQL_DATABASE=<db> MYSQL_USE
   - `WFP_CUSTOM_DOMAIN=1` is set without the operator override `ALLOW_KIND_A_CUSTOM_DOMAIN=1` (phase A only, for now; the override exists for the ggc.sh Type A cutover, #1471);
   - the account has no Hyperdrive config left (`HYPERDRIVE_CONFIG_LIMIT`, 25 on Workers Paid).
 - **After a failure** past the Hyperdrive config, `./deploy/wfp/site remove <name>` takes every part. Every remove looks for the config `wp-wfp-<name>` and the namespace `wp-wfp-<name>-oc` by name, whatever the site's kind, so a config left by a failed add (even one that stopped before its workspace) is found and deleted, not left holding one of the account's 25.
-- **`site update`, `import`, `restore` and `schedule` refuse a kind a site.** They snapshot, load or restore a `b-dosql` site's own database. `site update` for kind a (a rebuild and re-upload with no data step) is a follow-up.
+- **`site update` works on a kind a site.** It rebuilds the approach A bundle and uploads the user Worker again. It does not read or write MySQL. The upload uses the recorded Hyperdrive id. Placement comes from this run, or from the live script when this run sets none. `DEMO_LOCK` stays as recorded. A file `deploy/wfp/demo-sites/<name>` forces `DEMO_LOCK=on` when that file exists.
+- **`site import` works on a kind a site.** It loads a MySQL dump through `/_sqlimport`. `SQLITE` is refused.
+- **`site restore` and `site schedule` refuse a kind a site.** They restore a `b-dosql` site's SQLite, or they arm its snapshot cron.
 - **deploy/wfp never makes, changes or drops the database.** That is the owner's, as in one-click (#1049).
 - **Limits and cost:** 25 Hyperdrive configs per Workers Paid account ([Plan limits](../../docs/guide/cost.md#plan-limits)); Workers for Platforms $25 a month plus the $5 Workers Paid plan it needs; then the owner's MySQL.
 
@@ -194,6 +196,8 @@ Tests (offline): `site-cmd-test.sh` refuses `site import` with no source, for a 
 ./deploy/wfp/site restore <name>    # after a failed data restore (exit 3): restore the snapshot, clear the hold (#515)
 ./deploy/wfp/site schedule <name>   # the daily snapshot cron of an existing site (#533, "The scheduled snapshot")
 ```
+
+A kind a site uses the same `site update` command. It rebuilds approach A and uploads the user Worker. It does not snapshot MySQL. `site restore` and `site schedule` still refuse a kind a site.
 
 Workers for Platforms has no gradual deployments for user Workers, and `b-dosql` keeps its data in the Durable Object and its code in the Worker bundle. So an update re-uploads the SAME script (`site-<name>`): the object and its data persist, the code swaps. `site update`:
 
