@@ -53,6 +53,12 @@ git clone https://github.com/skyphusion-labs/pagefeather.git
 cd pagefeather
 ```
 
+For a published pre-alpha, copy the tag from the [Pagefeather release](https://github.com/skyphusion-labs/pagefeather/releases). In this clone, run the following command. Replace `<release-tag>` with the tag you copied. For a test of current main, continue directly to step 4.
+
+```sh
+git switch --detach '<release-tag>'
+```
+
 ### Step 4: make your store
 
 1. Put your values in place of the dots. Choose a short site name in place of `my-store`: lower-case letters, numbers and dashes.
@@ -92,7 +98,7 @@ Keep this password safe. The folder `deploy/terraform/terraform.tfstate.d/` hold
 - **wp-admin:** add `/wp-admin/` to that address. The user name is `admin`. The password is the one from step 5.
 - **The shop:** add `/shop/`.
 
-The first settings to check are the same as in [Start here](start-here.md#2-how-do-i-get-to-my-site). To update the site later, pull the new code (`git pull`) and run the step 4 command again, with the same values.
+The first settings to check are the same as in [Start here](start-here.md#2-how-do-i-get-to-my-site). To update a release install, fetch the tags with `git fetch origin --tags`, then run the step 3 switch command with the new release tag. On main, use `git pull --ff-only`. In the same clone, run the step 4 command again with the same site name and settings.
 
 ## Remove a site
 
