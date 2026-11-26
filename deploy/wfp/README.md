@@ -55,7 +55,7 @@ Before the install, `site.sh up` waits for the site to answer from its own user 
 Options:
 - `SITES`;
 - `BUILD=0` (use the build that is there);
-- `WFP_STATE=r2` (Terraform state in the R2 state bucket `wp-on-cf-tfstate`, with `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`);
+- `WFP_STATE=r2` (requires Terraform 1.10 or later for state locking in the R2 state bucket `wp-on-cf-tfstate`, with `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`);
 - `CHECK=0`;
 - `SITE_WAIT` (seconds to wait for a new site, default 300).
 
