@@ -2163,6 +2163,12 @@ async function boot(origin) {
 	}
 	const tSalted = Date.now(); // #1022 E2: after the salts' digests (init's first I/O-like awaits)
 	lines.push(`define('WP_HOME', ${JSON.stringify(origin)});`);
+	// Plugins use DB_NAME for metadata queries scoped to the current MySQL schema.
+	const mysqlDatabase = ENV.HYPERDRIVE?.database;
+	if (dbHandler && ENV.DB_IN_DO !== 'on' && typeof mysqlDatabase === 'string' && mysqlDatabase) {
+		const encoded = b64encode(new TextEncoder().encode(mysqlDatabase));
+		lines.push(`define('DB_NAME', base64_decode('${encoded}'));`);
+	}
 	// The R2 Uploads mu-plugin turns on when the MEDIA binding exists.
 	if (ENV.MEDIA) lines.push(`define('R2_UPLOADS', true);`);
 	// Image sizes come from the Images binding (php/cf-images-editor.php).

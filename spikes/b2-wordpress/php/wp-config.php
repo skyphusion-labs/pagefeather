@@ -3,7 +3,6 @@
  * wp-config.php for the B2 spike. The database is D1 (see wp-content/db.php).
  * A deploy sets its keys through the WP_SALT Worker secret (see index.js).
  */
-define( 'DB_NAME', 'wordpress' );
 define( 'DB_USER', '' );
 define( 'DB_PASSWORD', '' );
 define( 'DB_HOST', '' );
@@ -24,6 +23,9 @@ if ( ! defined( 'BOOTSTRAP_AST_CACHE' ) ) {
 // and WP_HOME from the request origin. Without it (local only) fixed keys apply.
 if ( file_exists( __DIR__ . '/wp-runtime.php' ) ) {
 	require __DIR__ . '/wp-runtime.php';
+}
+if ( ! defined( 'DB_NAME' ) ) {
+	define( 'DB_NAME', 'wordpress' );
 }
 // In the checkout Container there is no wp-runtime.php. The Worker passes
 // WP_SALT and the switches as environment variables; the keys are derived the
