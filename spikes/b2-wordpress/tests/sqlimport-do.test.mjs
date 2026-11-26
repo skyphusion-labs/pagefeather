@@ -119,8 +119,12 @@ test('with PHP_IN_DO=on, /_sqlimport reaches the PhpRuntime object and not the 4
 
 	const fetch = objectFetch();
 	const gate = fetch.indexOf("pathname.startsWith('/_') && !spikeOk");
-	const at = fetch.indexOf("url.pathname === '/_sqlimport'");
+	const refusedAt = fetch.indexOf("url.pathname === '/_sqlimport' && env.PHP_IN_DO === 'on' && env.DB_IN_DO !== 'on'");
+	const at = fetch.indexOf("if (url.pathname === '/_sqlimport') return sqlImport");
 	assert.ok(gate >= 0 && at > gate, 'the PhpRuntime object does not handle /_sqlimport after its own spike-token check');
+	assert.ok(refusedAt > gate && at > refusedAt, 'the external-MySQL Durable Object path must refuse /_sqlimport before calling sqlImport');
+	assert.match(fetch.slice(refusedAt, at), /status: 409/);
+	assert.match(fetch.slice(refusedAt, at), /MySQL client connected directly to the provider database/);
 	assert.match(
 		fetch.slice(at, fetch.indexOf('\n', at)),
 		/return sqlImport\(req, env, url, dbHandler\);/,
