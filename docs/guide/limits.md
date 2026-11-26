@@ -22,7 +22,7 @@ A MISS now renders in the `Pages` isolate again, as described above. A new hand-
 
 On `cf759hl` at main `822ab24`, 6 of 10 blocks checkout tests missed the suite's 10 s thank-you wait (#1210). The order POST took 9.3 to 11.8 s. The order was placed, and the page then answered 200. A query trace of one guest order showed 404 per-order transient DELETEs, 4.8 s of database time. #1206 added that cost.
 
-PR #1219 fixed that part (#1218, merged 2026-11-21): the engine sends a request's transient deletes as one statement at its end. On one counted order, 352 DELETE statements became 11 (row "#1219 counted probe"). On PR #1219's head, before the merge, 10 of 10 blocks checkout tests passed, and the order POST took 4.8 to 6.8 s (row "wc arm B 3"). The time that is left is database time, about 13 ms a query. That is still a slow checkout, and #1210 is closed. No full wc suite has run since the merge.
+PR #1219 fixed that part (#1218, merged 2026-11-21): the engine sends a request's transient deletes as one statement at its end. On one counted order, 352 DELETE statements became 11 (row "#1219 counted probe"). On PR #1219's head, before the merge, 10 of 10 blocks checkout tests passed, and the order POST took 4.8 to 6.8 s (row "wc arm B 3"). The time that is left is database time, about 13 ms a query. That is still a slow checkout, and #1210 is closed.
 
 ### WooCommerce admin screens and bulk product edits are slow on the MySQL option (#1078)
 
@@ -53,7 +53,7 @@ On approach A, one MySQL query may take at most 30 s (`DB_QUERY_TIMEOUT_MS`, def
 
 WooCommerce queues each order email. The approach A cron alarm ran those actions 12 to 122 s later, on `cf759hl` at main `822ab24` (row "wc email wait"). The suite polls for 30 s, so a send could miss that poll. A second miss on that run was the harness (#1216; PR #1217 fixed it, merged 2026-11-21).
 
-PR #1224 fixed the delay (#1215, merged 2026-11-21): a queued email wakes the cron within seconds. On its head, before the merge, all 13 email actions ran 2 to 11 s after queueing, and order-emails passed 6 of 6 (row "wc arm B 4"). The 8 failures on that run are email-editor latency (#1078), not the queue. No full wc suite has run since the merge.
+PR #1224 fixed the delay (#1215, merged 2026-11-21): a queued email wakes the cron within seconds. On its head, before the merge, all 13 email actions ran 2 to 11 s after queueing, and order-emails passed 6 of 6 (row "wc arm B 4"). The 8 failures on that run are email-editor latency (#1078), not the queue. The focused run measures ordinary order email. The time to drain a burst remains open in #1120.
 
 ### The WooCommerce "development version" admin notice (#1221)
 

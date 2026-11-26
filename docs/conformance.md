@@ -45,7 +45,9 @@ content, and `render_user` checks as the last guard.
 2. **Seed** (it also activates the two WooCommerce test plugins the line copied in; Gutenberg's stay inactive): `B=<site> ADMIN_PASSWORD=<the workspace's> python3 -I tests/conformance/seed.py <out>` (#775). It owns all
    setup and checks each item. `<out>/creds.env` (mode 600, `export` lines) holds the admin's account password, which
    is an application password (one value passes both the login form and Basic, #762), and the customer's.
-   For the wc and wc-api suites, seed with `SEED_RESET_STORE=1`: the seed first restores Basic auth (a new
+   On a fresh WooCommerce throwaway, run the first seed without `SEED_RESET_STORE` to activate the cleanup plugin.
+   Reuse that seed output directory on the next run so the seed can read the new admin password from `creds.env`.
+   For the wc and wc-api suites, reseed with `SEED_RESET_STORE=1`: the seed first restores Basic auth (a new
    application password), then resets the store (`GET wc-cleanup/v1/reset` with that password, as upstream's
    "reset" project does), only on a marked throwaway, before any content step, and records it in `seed.json`.
    As soon as that reset answers, success or failure, the seed revokes the application password it just minted

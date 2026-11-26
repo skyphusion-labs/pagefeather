@@ -7,6 +7,8 @@ const MODS = "define('DISALLOW_FILE_MODS', true);";
 const EDIT = "define('DISALLOW_FILE_EDIT', true);";
 const NOTICE = "define('SKYPHUSION_CODE_LOCK', true);";
 const DEMO = "define('PAGEFEATHER_DEMO_STORE', true);";
+const DEMO_DOSQL = "define('PAGEFEATHER_DEMO_VARIANT', 'b-dosql');";
+const DEMO_HYPERDRIVE = "define('PAGEFEATHER_DEMO_VARIANT', 'hyperdrive');";
 
 test('the demo lock is on only for DEMO_LOCK=on', () => {
 	assert.equal(demoLocked({ DEMO_LOCK: 'on' }), true);
@@ -31,9 +33,10 @@ test('CODE_LOCK does not turn on the demo lock, so a one-click site keeps its ma
 	assert.equal(demoLocked({ CODE_LOCK: 'on' }), false);
 });
 
-test('a demo site gets the file-mod defines and PAGEFEATHER_DEMO_STORE', () => {
-	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on' }), [MODS, EDIT, DEMO]);
-	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on', CODE_LOCK: 'on' }), [MODS, EDIT, DEMO]);
+test('a demo site gets the file-mod defines and its database variant', () => {
+	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on', DB_IN_DO: 'on' }), [MODS, EDIT, DEMO_DOSQL, DEMO]);
+	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on', HYPERDRIVE: {} }), [MODS, EDIT, DEMO_HYPERDRIVE, DEMO]);
+	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on', CODE_LOCK: 'on', DB_IN_DO: 'on' }), [MODS, EDIT, DEMO_DOSQL, DEMO]);
 });
 
 test('a one-click site gets the two defines and the notice constant', () => {
@@ -43,7 +46,7 @@ test('a one-click site gets the two defines and the notice constant', () => {
 test('the default is locked: only CODE_LOCK=off renders no lock defines (#458)', () => {
 	assert.deepEqual(lockDefines({}), [MODS, EDIT, NOTICE], 'a site with no var renders the lock constants (#458)');
 	assert.deepEqual(lockDefines({ DEMO_LOCK: 'off', CODE_LOCK: 'off' }), [], 'only an explicit CODE_LOCK=off renders nothing');
-	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on', CODE_LOCK: 'off' }), [MODS, EDIT, DEMO], 'a demo keeps its lock and demo notice');
+	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on', CODE_LOCK: 'off', DB_IN_DO: 'on' }), [MODS, EDIT, DEMO_DOSQL, DEMO], 'a demo keeps its lock and demo notice');
 });
 
 // index.js cannot be imported under node (it loads php-wasm), so these read its
@@ -104,7 +107,9 @@ test('the demo store notice returns first unless PAGEFEATHER_DEMO_STORE is true'
 	const guard = php.indexOf("if ( ! defined( 'PAGEFEATHER_DEMO_STORE' ) || true !== PAGEFEATHER_DEMO_STORE ) {");
 	assert.ok(guard >= 0, 'no constant guard');
 	assert.ok(guard < php.indexOf('add_filter('), 'the guard must come before add_filter');
-	assert.ok(php.includes('This is a demo store of the Pagefeather framework.'), 'missing STE demo line');
+	assert.ok(php.includes('This is a demo site of the Pagefeather framework.'), 'missing STE demo line');
+	assert.ok(php.includes('the Pagefeather b-dosql variant, with its built-in SQLite database'), 'missing b-dosql variant label');
+	assert.ok(php.includes('the Pagefeather approach A variant, with MySQL through Hyperdrive'), 'missing Hyperdrive variant label');
 	assert.ok(!/sign up|pricing|buy now|subscribe/i.test(php), 'demo copy must not funnel or upsell');
 	assert.equal((php.match(/add_filter\(\s*'the_content'/g) || []).length, 1, 'the_content once');
 	assert.equal((php.match(/add_action\(\s*'wp_body_open'/g) || []).length, 0, 'no wp_body_open twin');

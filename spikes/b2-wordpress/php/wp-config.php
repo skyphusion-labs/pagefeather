@@ -3,7 +3,6 @@
  * wp-config.php for the B2 spike. The database is D1 (see wp-content/db.php).
  * A deploy sets its keys through the WP_SALT Worker secret (see index.js).
  */
-define( 'DB_NAME', 'wordpress' );
 define( 'DB_USER', '' );
 define( 'DB_PASSWORD', '' );
 define( 'DB_HOST', '' );
@@ -24,6 +23,22 @@ if ( ! defined( 'BOOTSTRAP_AST_CACHE' ) ) {
 // and WP_HOME from the request origin. Without it (local only) fixed keys apply.
 if ( file_exists( __DIR__ . '/wp-runtime.php' ) ) {
 	require __DIR__ . '/wp-runtime.php';
+}
+// Hyperdrive's login database can differ from the origin schema. Read the
+// selected schema on this request's bridge connection before WordPress boots.
+if ( defined( 'PAGEFEATHER_HYPERDRIVE' ) && PAGEFEATHER_HYPERDRIVE ) {
+	$pf_schema_reply = json_decode( post_message_to_js( '{"mysql":"SELECT DATABASE()"}' ), true );
+	$pf_database = $pf_schema_reply['rows'][0][0] ?? null;
+	if ( is_array( $pf_database ) && isset( $pf_database['$b'] ) ) {
+		$pf_database = base64_decode( $pf_database['$b'], true );
+	}
+	if ( empty( $pf_schema_reply['ok'] ) || ! is_string( $pf_database ) || '' === $pf_database ) {
+		throw new RuntimeException( 'Hyperdrive could not read the selected database.' );
+	}
+	define( 'DB_NAME', $pf_database );
+	unset( $pf_schema_reply, $pf_database );
+} elseif ( ! defined( 'DB_NAME' ) ) {
+	define( 'DB_NAME', 'wordpress' );
 }
 // In the checkout Container there is no wp-runtime.php. The Worker passes
 // WP_SALT and the switches as environment variables; the keys are derived the
