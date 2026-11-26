@@ -130,7 +130,15 @@ KIND=a PLACEMENT=azure:westus2 MYSQL_HOST=<server> MYSQL_DATABASE=<db> MYSQL_USE
   - `WFP_CUSTOM_DOMAIN=1` is set without the operator override `ALLOW_KIND_A_CUSTOM_DOMAIN=1` (phase A only, for now; the override exists for the ggc.sh Type A cutover, #1471);
   - the account has no Hyperdrive config left (`HYPERDRIVE_CONFIG_LIMIT`, 25 on Workers Paid).
 - **After a failure** past the Hyperdrive config, `./deploy/wfp/site remove <name>` takes every part. Every remove looks for the config `wp-wfp-<name>` and the namespace `wp-wfp-<name>-oc` by name, whatever the site's kind, so a config left by a failed add (even one that stopped before its workspace) is found and deleted, not left holding one of the account's 25.
-- **`site update` works on a kind a site.** It rebuilds the approach A bundle and uploads the user Worker again. It does not read or write MySQL. The upload uses the recorded Hyperdrive id. Placement comes from this run, or from the live script when this run sets none. `DEMO_LOCK` stays as recorded. A file `deploy/wfp/demo-sites/<name>` forces `DEMO_LOCK=on` when that file exists.
+- **`site update` works on a kind a site.** It rebuilds the approach A bundle and uploads the user Worker again. It does not read or write MySQL. The upload uses the recorded Hyperdrive id.
+  - Placement is this run's `PLACEMENT` when you set it.
+  - Else it is a region, or `smart`, that the live script settings return.
+  - A live answer of `{}` or `{"mode":"targeted"}` has no region. Measured on #1310, 2026-11-22.
+  - The update then uses the placement recorded in the site settings.
+  - When none of these exist, the update refuses and names `PLACEMENT`. Nothing is changed.
+  - A good update records the placement it used. The next update can reuse that record.
+  - Verify reads `/_cron-build` on the user Worker. `/_build` stays the b-dosql object check.
+  - `DEMO_LOCK` stays as recorded. A file `deploy/wfp/demo-sites/<name>` forces `DEMO_LOCK=on` when that file exists.
 - **`site import` works on a kind a site.** It loads a MySQL dump through `/_sqlimport`. `SQLITE` is refused.
 - **`site restore` and `site schedule` refuse a kind a site.** They restore a `b-dosql` site's SQLite, or they arm its snapshot cron.
 - **deploy/wfp never makes, changes or drops the database.** That is the owner's, as in one-click (#1049).

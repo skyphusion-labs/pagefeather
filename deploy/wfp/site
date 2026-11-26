@@ -86,13 +86,11 @@ update_one_inner() {
   # computed ones (lib.sh site_vars): recomputing them would re-key the entry
   # or replace the Custom Domain, and take the site off its domain.
   site_vars "$s" "$SUB" "$KV_ID" || return 1
-  # #1502: kind a update is allowed. Placement is this run's, else the live script's.
+  # #1502: kind a update is allowed. Placement is resolved after the recorded settings load.
   # Hyperdrive id stays the workspace record (out, at render). restore and schedule still refuse.
   local SITE_KIND=b-dosql
   if [ "${REC_KIND:-b-dosql}" = a ]; then
     SITE_KIND=a
-    local PLACEMENT="${WFP_PLACEMENT_RUN-}"
-    kind_a_placement "$s" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
   fi
   local ORIGIN="https://$REC_HOST"
   echo "site $s: hostname $REC_HOST, custom domain $REC_CD (recorded or computed by lib.sh site_vars)"
@@ -126,7 +124,14 @@ update_one_inner() {
   echo "site $s: the recorded settings"
   keep_settings "$bucket" "$WDIR" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
   # #1502 / #1499: a demo-sites file forces DEMO_LOCK=on. No file leaves the recorded value.
-  if [ "$SITE_KIND" = a ]; then kind_a_demo_lock "$s"; fi
+  # Placement: this run, else a real live region or smart, else the settings record.
+  # A live body of {} or mode targeted has no region. Nothing live has changed yet.
+  if [ "$SITE_KIND" = a ]; then
+    kind_a_demo_lock "$s"
+    KIND_A_RECORDED_PLACEMENT=$(kind_a_placement_recorded "$WDIR/settings.json")
+    local PLACEMENT="${WFP_PLACEMENT_RUN-}"
+    kind_a_placement "$s" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
+  fi
   # #764: the RECORDED inputs can carry conformance content too: checked again on them, before the snapshot,
   # the build and the upload. #1002: after keep_settings, so the gate reads the settings this upload renders
   # (the recorded Turnstile values merged with this run's), not this run's environment alone.
@@ -232,7 +237,12 @@ update_one_inner() {
   obs_redact_site "$NAMESPACE" "site-$s" "$CONF" || { echo "site $s: UPLOADED, but the query-string redaction did NOT read back, so its logs are now OFF (or could not be turned off: read the line above); the update fails" >&2; ok=0; }
   tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$new" -var "config_hash=$new_hash" >/dev/null || { echo "site $s: the site map entry did not record build $new" >&2; ok=0; }
   echo "site $s: verify the new build is live"
-  wait_build "$ORIGIN" "$TOK" "$new" || ok=0
+  # #1502: kind a PHP runs in the user Worker. wait_build polls the b-dosql object.
+  if [ "$SITE_KIND" = a ]; then
+    kind_a_wait_build "$ORIGIN" "$TOK" "$new" || ok=0
+  else
+    wait_build "$ORIGIN" "$TOK" "$new" || ok=0
+  fi
   [ "$ok" = 1 ] && { [ "$(curl -s -o /dev/null -w '%{http_code}' -m 60 "$ORIGIN/?nocache=$RANDOM")" = 200 ] || { echo "site $s: the site did not answer 200 after the update" >&2; ok=0; }; }
   # A test hook (issue #35 slice 5): force the verify to fail, to exercise the
   # rollback path against an otherwise-good new build. Off unless FORCE_FAIL=verify.
@@ -290,7 +300,11 @@ update_one_inner() {
       # #639: a re-upload needs the redaction set again, by the config it uploaded.
       obs_redact_site "$NAMESPACE" "site-$s" "$SAVED/wrangler.rollback.toml" || echo "site $s: the rollback is live, but its query-string redaction did NOT read back, so its logs are now OFF (or could not be turned off: read the line above)" >&2
       tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$live_build" -var "config_hash=$live_hash" >/dev/null || echo "site $s: the site map entry did not record the rollback build $live_build" >&2
-      wait_build "$ORIGIN" "$TOK" "$live_build" || echo "site $s: /_build did not return to $live_build after the rollback re-deploy" >&2
+      if [ "$SITE_KIND" = a ]; then
+        kind_a_wait_build "$ORIGIN" "$TOK" "$live_build" || echo "site $s: the worker build did not return to $live_build after the rollback re-deploy" >&2
+      else
+        wait_build "$ORIGIN" "$TOK" "$live_build" || echo "site $s: /_build did not return to $live_build after the rollback re-deploy" >&2
+      fi
     else
       echo "site $s: the rollback re-deploy FAILED; the old code is NOT live. Deploy $live_build by hand. Reason:" >&2
       tail -20 "$W2/rb.log" 2>/dev/null >&2

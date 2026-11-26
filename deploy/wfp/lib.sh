@@ -1029,6 +1029,11 @@ record_settings() {
   else
     python3 -I "$WFP/site_settings.py" env-json > "$2/settings-rec.json" || return 1
   fi
+  # #1502: kind a. The live script settings often have no region (#1310). Record the placement
+  # this run rendered so the next update can reuse it.
+  if [ "${SITE_KIND:-b-dosql}" = a ] && [ -n "${PLACEMENT:-}" ]; then
+    kind_a_stamp_placement "$2/settings-rec.json" "$PLACEMENT" || return 1
+  fi
   python3 -I "$WFP/site_settings.py" put "$1" "$2/settings-rec.json" || return 1
   echo "  settings recorded in $1/_build/settings.json ($(python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); print(" ".join(sorted(d["settings"])) or "none", "| secrets:", " ".join(d["secrets"]) or "none")' "$2/settings-rec.json"))"
 }

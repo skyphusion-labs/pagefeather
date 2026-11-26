@@ -161,52 +161,155 @@ kind_a_refuse() {
   echo "site $1 is kind a (approach A, the owner's MySQL): this command works on a b-dosql site's own database and is refused. Nothing was changed." >&2
   return 2
 }
+# kind_a_placement_recorded <settings.json>: the placement stored on the settings record, or nothing.
+# A missing file is nothing. This is not a region from the live script settings.
+kind_a_placement_recorded() {
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 0
+  python3 -I -c 'import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    raise SystemExit(0)
+v = d.get("placement") if isinstance(d, dict) else ""
+if isinstance(v, str) and v:
+    print(v)' "$1"
+}
+# kind_a_stamp_placement <settings.json> <placement>: write the placement this run rendered.
+# The live GET often returns no region (#1310, measured 2026-11-22).
+kind_a_stamp_placement() {
+  [ -n "${2:-}" ] || return 0
+  [ -f "$1" ] || return 1
+  python3 -I -c 'import json, sys
+p, v = sys.argv[1], sys.argv[2]
+d = json.load(open(p))
+if not isinstance(d, dict):
+    raise SystemExit(1)
+d["placement"] = v
+json.dump(d, open(p, "w"), sort_keys=True)' "$1" "$2"
+}
+# kind_a_take_recorded <site> <why>: use KIND_A_RECORDED_PLACEMENT when it is set.
+# 0 taken. 1 nothing recorded. 2 recorded, and placement_check refuses it.
+kind_a_take_recorded() {
+  local s=$1 why=$2 rec
+  rec=${KIND_A_RECORDED_PLACEMENT:-}
+  [ -n "$rec" ] || return 1
+  PLACEMENT=$rec
+  if ! ( . "$WFP/../render-conf.sh" >/dev/null 2>&1; placement_check ); then
+    echo "site $s: the recorded placement $rec is not a value this render accepts. Set PLACEMENT. Nothing was changed." >&2
+    PLACEMENT=
+    return 2
+  fi
+  echo "site $s: placement $PLACEMENT (recorded settings). $why"
+  return 0
+}
 # kind_a_placement <site>: the placement a kind a update renders. This run's PLACEMENT wins when it is set.
-# Else the live script settings (placement.region, or smart). Exit 2 when neither is a value placement_check
-# accepts. The caller has changed nothing yet.
+# Else a region, or smart, that the live script settings actually return.
+# A live body of {} or {"mode":"targeted"} has no region (measured #1310, 2026-11-22).
+# Then the recorded placement. Exit 2 when none of these is a value placement_check accepts.
+# The caller has changed nothing yet. Do not say the live GET returned a region when it did not.
 kind_a_placement() {
-  local s=$1 out code region
+  local s=$1 out code parsed kind value rc
   if [ -n "${PLACEMENT:-}" ]; then
     ( . "$WFP/../render-conf.sh" >/dev/null 2>&1; placement_check ) || return 2
     echo "site $s: placement $PLACEMENT (this run)"
     return 0
   fi
   out=$(api GET "/workers/dispatch/namespaces/$NAMESPACE/scripts/$(user_script "$s")/settings") || {
+    rc=0
+    kind_a_take_recorded "$s" "The live settings cannot be read." || rc=$?
+    [ "$rc" = 0 ] && return 0
+    [ "$rc" = 2 ] && return 2
     echo "site $s: kind a update needs PLACEMENT, and the live settings cannot be read. Nothing was changed." >&2
     return 2
   }
   code=${out##*$'\n'}
   if [ "$code" != 200 ]; then
+    rc=0
+    kind_a_take_recorded "$s" "The live settings answered HTTP $code." || rc=$?
+    [ "$rc" = 0 ] && return 0
+    [ "$rc" = 2 ] && return 2
     echo "site $s: kind a update needs PLACEMENT, and the live settings answered HTTP $code. Nothing was changed." >&2
     return 2
   fi
-  region=$(printf '%s' "${out%$'\n'*}" | python3 -I -c 'import json, sys
+  parsed=$(printf '%s' "${out%$'\n'*}" | python3 -I -c 'import json, sys
 try:
     d = json.load(sys.stdin)
 except ValueError:
-    sys.exit(1)
+    raise SystemExit(1)
 r = d.get("result") if isinstance(d, dict) else None
 p = r.get("placement") if isinstance(r, dict) else None
+if p is None:
+    p = {}
 if not isinstance(p, dict):
-    sys.exit(1)
-region = p.get("region") or ""
-mode = p.get("mode") or ""
+    raise SystemExit(1)
+region = p.get("region") if isinstance(p.get("region"), str) else ""
+mode = p.get("mode") if isinstance(p.get("mode"), str) else ""
 if region:
+    print("region")
     print(region)
 elif mode == "smart":
     print("smart")
+    print("smart")
+elif mode in ("", "targeted"):
+    print("absent")
+    print(mode or "empty")
 else:
-    sys.exit(1)') || {
-    echo "site $s: kind a update needs PLACEMENT. The live script has no placement region. Set PLACEMENT (for example azure:westus2). Nothing was changed." >&2
+    raise SystemExit(1)') || {
+    rc=0
+    kind_a_take_recorded "$s" "The live settings could not be read as placement." || rc=$?
+    [ "$rc" = 0 ] && return 0
+    [ "$rc" = 2 ] && return 2
+    echo "site $s: kind a update needs PLACEMENT. The live script settings have no placement region. Set PLACEMENT (for example azure:westus2). Nothing was changed." >&2
     return 2
   }
-  PLACEMENT=$region
-  if ! ( . "$WFP/../render-conf.sh" >/dev/null 2>&1; placement_check ); then
-    PLACEMENT=
-    echo "site $s: the live placement $region is not a value this render accepts. Set PLACEMENT. Nothing was changed." >&2
-    return 2
-  fi
-  echo "site $s: placement $PLACEMENT (live script settings)"
+  kind=$(printf '%s\n' "$parsed" | sed -n '1p')
+  value=$(printf '%s\n' "$parsed" | sed -n '2p')
+  case "$kind" in
+    region|smart)
+      PLACEMENT=$value
+      if ! ( . "$WFP/../render-conf.sh" >/dev/null 2>&1; placement_check ); then
+        echo "site $s: the live placement $value is not a value this render accepts. Set PLACEMENT. Nothing was changed." >&2
+        PLACEMENT=
+        return 2
+      fi
+      echo "site $s: placement $PLACEMENT (live script settings)"
+      return 0
+      ;;
+    absent)
+      rc=0
+      kind_a_take_recorded "$s" "The live script settings have no region (placement ${value})." || rc=$?
+      [ "$rc" = 0 ] && return 0
+      [ "$rc" = 2 ] && return 2
+      echo "site $s: kind a update needs PLACEMENT. The live script settings have no region (placement ${value}). No placement is recorded. Set PLACEMENT (for example azure:westus2). This update records it. Nothing was changed." >&2
+      return 2
+      ;;
+    *)
+      echo "site $s: kind a update needs PLACEMENT. The live script settings have no placement region. Set PLACEMENT (for example azure:westus2). Nothing was changed." >&2
+      return 2
+      ;;
+  esac
+}
+# kind_a_wait_build <origin> <token> <want>
+# Kind a serves PHP in the user Worker. /_build and /_evict live on the b-dosql
+# PhpRuntime object. Polling them never sees this upload, so verify fails and the
+# update rolls the Worker back (#1502). /_cron-build is the user Worker build
+# (a-cron.mjs). It returns worker. This does not call the object, and it does not evict.
+kind_a_wait_build() {
+  local t0=$SECONDS b text
+  text=$(printf 'header = "x-spike-token: %s"\n' "$2")
+  while :; do
+    b=$(curl_cfg "$text" -s -m 30 "$1/_cron-build" 2>/dev/null | python3 -c 'import json, sys
+try:
+    w = json.load(sys.stdin).get("worker") or ""
+except Exception:
+    w = ""
+if not isinstance(w, str):
+    w = ""
+print(w)')
+    [ "$b" = "$3" ] && { echo "  worker build $b live after $((SECONDS - t0)) s"; return 0; }
+    [ $((SECONDS - t0)) -lt "${BUILD_WAIT:-60}" ] || { echo "the new worker build $3 did not go live in ${BUILD_WAIT:-60} s (last: ${b:-none})" >&2; return 1; }
+    sleep "${BUILD_POLL_S:-3}"
+  done
 }
 # kind_a_demo_lock <site>: a file deploy/wfp/demo-sites/<name> forces DEMO_LOCK=on (#1499).
 # The file is optional. This tree may not have it yet. No file leaves DEMO_LOCK as it is
