@@ -2163,6 +2163,7 @@ async function boot(origin) {
 	}
 	const tSalted = Date.now(); // #1022 E2: after the salts' digests (init's first I/O-like awaits)
 	lines.push(`define('WP_HOME', ${JSON.stringify(origin)});`);
+	if (dbHandler && ENV.DB_IN_DO !== 'on') lines.push("define('PAGEFEATHER_HYPERDRIVE', true);");
 	// The R2 Uploads mu-plugin turns on when the MEDIA binding exists.
 	if (ENV.MEDIA) lines.push(`define('R2_UPLOADS', true);`);
 	// Image sizes come from the Images binding (php/cf-images-editor.php).
