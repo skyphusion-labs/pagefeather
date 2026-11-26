@@ -250,6 +250,30 @@ check "  HTTP_ALLOW_HOSTS with no record goes back to the default list" "$(grep 
 printf '{"v": 1, "settings": {"HTTP_ALLOW_HOSTS": {"set": true, "value": "b.example"}}, "secrets": []}' > "$T/rc.json"
 ( export HTTP_ALLOW_HOSTS=a.example,cldup.com; python3 -I "$WFP/site_settings.py" rollback-conf "$T/rc.toml" "$T/rc.json" "$T/rc.out" ) 2> "$T/rc.err"
 check "  HTTP_ALLOW_HOSTS goes back to the recorded list" "$(grep -c '^HTTP_ALLOW_HOSTS = "b.example"$' "$T/rc.out")" 1
+# #1502: kind a rollback must put the prior [placement] back. This run's config
+# has the new region or host. An empty prior leaves this run's block.
+printf 'name = "site-shop"\n[placement]\nregion = "gcp:us-central1"\n[vars]\nMAIL_FROM = "wp@example.com"\n' > "$T/rc.toml"
+printf '{"v": 1, "settings": {"MAIL_FROM": "wp@example.com"}, "secrets": []}' > "$T/rc.json"
+rc=0
+( export KIND_A_ROLLBACK_PLACEMENT='region = "azure:westus2"' MAIL_FROM=wp@example.com; python3 -I "$WFP/site_settings.py" rollback-conf "$T/rc.toml" "$T/rc.json" "$T/rc.out" ) 2> "$T/rc.err" || rc=$?
+check "#1502 rollback-conf: a new region is put back to the prior region (rc $rc)" "$rc:$(grep -c '^region = "azure:westus2"$' "$T/rc.out"):$(grep -c 'gcp:us-central1' "$T/rc.out")" "0:1:0"
+check "  the log names the placement restore" "$(grep -c 'rollback: placement restored' "$T/rc.err")" 1
+printf 'name = "site-shop"\n[placement]\nhost = "new.example:3306"\n[vars]\nMAIL_FROM = "wp@example.com"\n' > "$T/rc.toml"
+rc=0
+( export KIND_A_ROLLBACK_PLACEMENT='host = "db.example.org:3307"' MAIL_FROM=wp@example.com; python3 -I "$WFP/site_settings.py" rollback-conf "$T/rc.toml" "$T/rc.json" "$T/rc.out" ) 2> "$T/rc.err" || rc=$?
+check "#1502 rollback-conf: a new host is put back to the prior host (rc $rc)" "$rc:$(grep -c '^host = "db.example.org:3307"$' "$T/rc.out"):$(grep -c 'new.example' "$T/rc.out")" "0:1:0"
+printf 'name = "site-shop"\n[placement]\nmode = "smart"\n[vars]\nMAIL_FROM = "wp@example.com"\n' > "$T/rc.toml"
+rc=0
+( export KIND_A_ROLLBACK_PLACEMENT='region = "azure:westus2"' MAIL_FROM=wp@example.com; python3 -I "$WFP/site_settings.py" rollback-conf "$T/rc.toml" "$T/rc.json" "$T/rc.out" ) 2> "$T/rc.err" || rc=$?
+check "#1502 rollback-conf: smart is put back to the prior region (rc $rc)" "$rc:$(grep -c '^region = "azure:westus2"$' "$T/rc.out"):$(grep -c '^mode = "smart"$' "$T/rc.out")" "0:1:0"
+printf 'name = "site-shop"\n[placement]\nregion = "gcp:us-central1"\n[vars]\nMAIL_FROM = "wp@example.com"\n' > "$T/rc.toml"
+rc=0
+( export KIND_A_ROLLBACK_PLACEMENT= MAIL_FROM=wp@example.com; python3 -I "$WFP/site_settings.py" rollback-conf "$T/rc.toml" "$T/rc.json" "$T/rc.out" ) 2> "$T/rc.err" || rc=$?
+check "#1502 rollback-conf: an empty prior placement keeps this run region (rc $rc)" "$rc:$(grep -c '^region = "gcp:us-central1"$' "$T/rc.out")" "0:1"
+printf 'name = "site-shop"\n[vars]\nMAIL_FROM = "wp@example.com"\n' > "$T/rc.toml"
+rc=0
+( export KIND_A_ROLLBACK_PLACEMENT='region = "azure:westus2"' MAIL_FROM=wp@example.com; python3 -I "$WFP/site_settings.py" rollback-conf "$T/rc.toml" "$T/rc.json" "$T/rc.out" ) 2> "$T/rc.err" || rc=$?
+check "#1502 rollback-conf: a prior line and no [placement] block is refused (rc $rc)" "$rc" 4
 # No record at all (a site from before #558): the rollback says it keeps this run's settings.
 run_update "$LIVE_B" FORCE_FAIL=verify BKT=c1385e OBJECT_CALL_DEADLINE_S=1
 check "#1385: no recorded settings: the log says the rollback could not restore them, and names this run's" "$(grep -c 'ROLLBACK LEFT A SETTING LIVE: OBJECT_CALL_DEADLINE_S' "$T/out")" 1

@@ -129,9 +129,14 @@ update_one_inner() {
   # #1502 / #1499: a demo-sites file forces DEMO_LOCK=on. No file leaves the recorded value.
   # Placement: this run, else a real live region or smart, else the settings record.
   # A live body of {} or mode targeted has no region. Nothing live has changed yet.
+  # KIND_A_ROLLBACK_PLACEMENT is the prior [placement] line for a failed update.
+  # Empty keeps this run's block. The child rollback-conf reads it.
+  local -x KIND_A_ROLLBACK_PLACEMENT=""
   if [ "$SITE_KIND" = a ]; then
     kind_a_demo_lock "$s"
     KIND_A_RECORDED_PLACEMENT=$(kind_a_placement_recorded "$WDIR/settings.json")
+    # Save the prior line before kind_a_placement replaces PLACEMENT.
+    KIND_A_ROLLBACK_PLACEMENT=$(kind_a_prior_placement_line "$s")
     # local -x keeps host placement inside this one update (update --all runs many).
     # Same idea as PLACEMENT and the recorded settings.
     local PLACEMENT="${WFP_PLACEMENT_RUN-}"
@@ -222,6 +227,9 @@ update_one_inner() {
   if [ -z "$reasons" ]; then
     echo "site $s: already at build $new; nothing to do"
     # Nothing is uploaded, so the live config is this run's: a site with no record gets one (#558).
+    # Kind a: an existing record still gets this run's placement. A no-op used to skip it.
+    # The next update then refused when the live body was {} or targeted.
+    kind_a_stamp_placement_record "$bucket" "$WDIR" || echo "site $s: its placement was NOT recorded" >&2
     [ "$SETTINGS_RECORDED" = 1 ] || record_settings "$bucket" "$WDIR" || echo "site $s: its settings were NOT recorded (#558)" >&2
     rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 0
   fi

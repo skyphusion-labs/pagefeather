@@ -187,6 +187,74 @@ if not isinstance(d, dict):
 d["placement"] = v
 json.dump(d, open(p, "w"), sort_keys=True)' "$1" "$2"
 }
+# kind_a_prior_placement_line <site>
+# The [placement] line a kind a rollback puts back.
+# Set only when this run named PLACEMENT. kind_a_placement then skips the live read.
+# A live region, smart, or host wins. Else a recorded region or smart.
+# Recorded host has no host name, so the line stays empty.
+# Empty means the rollback keeps this run's [placement].
+kind_a_prior_placement_line() {
+  local s=$1 out code line rec
+  [ -n "${WFP_PLACEMENT_RUN:-}" ] || return 0
+  out=$(api GET "/workers/dispatch/namespaces/$NAMESPACE/scripts/$(user_script "$s")/settings") || out=""
+  code=${out##*$'\n'}
+  if [ "$code" = 200 ]; then
+    line=$(printf '%s' "${out%$'\n'*}" | python3 -I -c 'import json, re, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(0)
+r = d.get("result") if isinstance(d, dict) else None
+p = r.get("placement") if isinstance(r, dict) else None
+if not isinstance(p, dict):
+    p = {}
+region = p.get("region") if isinstance(p.get("region"), str) else ""
+mode = p.get("mode") if isinstance(p.get("mode"), str) else ""
+host = p.get("host") if isinstance(p.get("host"), str) else ""
+if region and re.match(r"^(aws|gcp|azure):[a-z0-9-]{2,40}$", region):
+    sys.stdout.write("region = " + json.dumps(region) + "\n")
+elif mode == "smart":
+    sys.stdout.write("mode = \"smart\"\n")
+else:
+    if host and ":" not in host and re.match(r"^[A-Za-z0-9.-]{1,253}$", host):
+        host = host + ":3306"
+    if host and re.match(r"^[A-Za-z0-9.-]{1,253}:[0-9]{1,5}$", host):
+        sys.stdout.write("host = " + json.dumps(host) + "\n")
+') || line=""
+    if [ -n "$line" ]; then
+      printf '%s\n' "$line"
+      return 0
+    fi
+  fi
+  rec=${KIND_A_RECORDED_PLACEMENT:-}
+  case "$rec" in
+    smart) printf '%s\n' 'mode = "smart"' ;;
+    aws:*|gcp:*|azure:*)
+      [[ "$rec" =~ ^(aws|gcp|azure):[a-z0-9-]{2,40}$ ]] || return 0
+      printf 'region = "%s"\n' "$rec"
+      ;;
+    *)
+      # Recorded host stores the word host, not the host name.
+      # Any other value is empty. The rollback keeps this run's block.
+      ;;
+  esac
+}
+# kind_a_stamp_placement_record <bucket> <work dir>
+# A no-op update does not upload. Write PLACEMENT onto the settings record
+# when this run resolved one and the record differs. Kind a only.
+# 0 stamped, already set, or not this case. 1 the write failed.
+kind_a_stamp_placement_record() {
+  local have
+  [ "${SITE_KIND:-b-dosql}" = a ] || return 0
+  [ -n "${PLACEMENT:-}" ] || return 0
+  [ "${SETTINGS_RECORDED:-0}" = 1 ] || return 0
+  [ -f "$2/settings.json" ] || return 1
+  have=$(kind_a_placement_recorded "$2/settings.json")
+  [ "$have" = "$PLACEMENT" ] && return 0
+  kind_a_stamp_placement "$2/settings.json" "$PLACEMENT" || return 1
+  python3 -I "$WFP/site_settings.py" put "$1" "$2/settings.json" || return 1
+  echo "  placement recorded ($PLACEMENT)"
+}
 # kind_a_take_recorded <site> <why>: use KIND_A_RECORDED_PLACEMENT when it is set.
 # 0 taken. 1 nothing recorded. 2 recorded, and placement_check refuses it.
 # Recorded host needs MYSQL_HOST. A missing host is a refusal. Do not report success.

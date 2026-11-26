@@ -67,6 +67,16 @@ import=$(awk '/^import_one\(\)/,/^}/' "$SITE")
 ok "restore still calls kind_a_refuse" "$(printf '%s\n' "$restore" | grep -c 'kind_a_refuse' | grep -qx 1 && echo 1 || echo 0)"
 ok "schedule still calls kind_a_refuse" "$(printf '%s\n' "$schedule" | grep -c 'kind_a_refuse' | grep -qx 1 && echo 1 || echo 0)"
 ok "import does not call kind_a_refuse" "$(printf '%s\n' "$import" | grep -c 'kind_a_refuse' | grep -qx 0 && echo 1 || echo 0)"
+ok "update saves the prior placement before kind_a_placement" "$(
+  a=$(printf '%s\n' "$body" | grep -n 'KIND_A_ROLLBACK_PLACEMENT=$(kind_a_prior_placement_line' | head -1 | cut -d: -f1)
+  b=$(printf '%s\n' "$body" | grep -n 'kind_a_placement "$s"' | head -1 | cut -d: -f1)
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && echo 1 || echo 0
+)"
+ok "the prior placement is exported for rollback-conf" "$(printf '%s\n' "$body" | grep -c 'local -x KIND_A_ROLLBACK_PLACEMENT=' | grep -qx 1 && echo 1 || echo 0)"
+ok "no-op update stamps kind a placement on the record" "$(
+  seg=$(printf '%s\n' "$body" | awk '/already at build/,/return 0/')
+  printf '%s\n' "$seg" | grep -c 'kind_a_stamp_placement_record' | grep -qx 1 && echo 1 || echo 0
+)"
 
 # 2. Placement. A bad live answer must refuse. A region must be kept.
 # A live body of {} or {"mode":"targeted"} has no region (#1310). It is not a region.
@@ -252,6 +262,78 @@ ok "stamp writes placement onto the settings record" "$([ "$got" = azure:westus2
 rm -f "$recf"
 recfn=$(awk '/^record_settings\(\)/,/^}/' "$WFP/lib.sh")
 ok "record_settings stamps kind a placement" "$(printf '%s\n' "$recfn" | grep -c 'kind_a_stamp_placement' | grep -qx 1 && echo 1 || echo 0)"
+
+# Prior [placement] for a kind a rollback. This run's PLACEMENT wins inside
+# kind_a_placement and does not read the live body. The prior line is the live
+# region, smart, or host, else a recorded region. Empty keeps this run's block.
+unset PLACEMENT
+WFP_PLACEMENT_RUN=gcp:us-central1
+API_MODE=region
+got=$(kind_a_prior_placement_line shop 2>"$log" || true)
+ok "operator placement: prior line is the live region, not this run" "$(
+  [ "$got" = 'region = "azure:westus2"' ] && echo 1 || echo 0
+)"
+API_MODE=host
+got=$(kind_a_prior_placement_line shop 2>"$log" || true)
+ok "operator placement: prior line is the live host" "$(
+  [ "$got" = 'host = "db.example.org:3307"' ] && echo 1 || echo 0
+)"
+API_MODE=empty
+KIND_A_RECORDED_PLACEMENT=azure:westus2
+got=$(kind_a_prior_placement_line shop 2>"$log" || true)
+ok "live placement empty: prior line is the recorded region" "$(
+  [ "$got" = 'region = "azure:westus2"' ] && echo 1 || echo 0
+)"
+KIND_A_RECORDED_PLACEMENT=host
+got=$(kind_a_prior_placement_line shop 2>"$log" || true)
+ok "recorded host and no live host: prior line stays empty" "$(
+  type kind_a_prior_placement_line >/dev/null 2>&1 && [ -z "$got" ] && echo 1 || echo 0
+)"
+unset WFP_PLACEMENT_RUN
+API_MODE=region
+got=$(kind_a_prior_placement_line shop 2>"$log" || true)
+ok "no operator placement: prior line stays empty" "$(
+  type kind_a_prior_placement_line >/dev/null 2>&1 && [ -z "$got" ] && echo 1 || echo 0
+)"
+unset KIND_A_RECORDED_PLACEMENT
+
+# A no-op does not upload. An existing record with no placement still gets one.
+SITE_KIND=b-dosql
+SETTINGS_RECORDED=1
+PLACEMENT=azure:westus2
+plain=$(mktemp)
+printf '%s\n' '{"v":1,"settings":{"MAIL_FROM":"wp@example.com"},"secrets":[]}' > "$plain"
+kind_a_stamp_placement_record wp-wfp-shop-media "$(dirname "$plain")" >/dev/null 2>&1 || true
+ok "b-dosql no-op does not write placement" "$(
+  type kind_a_stamp_placement_record >/dev/null 2>&1 && python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); raise SystemExit(0 if "placement" not in d else 1)' "$plain" && echo 1 || echo 0
+)"
+rm -f "$plain"
+S3D=$(mktemp -d)
+python3 -I "$WFP/tests/fake-s3.py" "$S3D/port" >/dev/null 2>&1 &
+S3PID=$!
+for _ in $(seq 1 50); do [ -s "$S3D/port" ] && break; sleep 0.1; done
+export WFP_S3_ENDPOINT="http://127.0.0.1:$(cat "$S3D/port")" WFP_S3_KEY_ID=k WFP_S3_SECRET=s CLOUDFLARE_ACCOUNT_ID=test
+mkdir -p "$S3D/w"
+printf '%s\n' '{"v":1,"settings":{"MAIL_FROM":"wp@example.com"},"secrets":[]}' > "$S3D/w/settings.json"
+SITE_KIND=a
+SETTINGS_RECORDED=1
+PLACEMENT=azure:westus2
+kind_a_stamp_placement_record wp-wfp-shop-media "$S3D/w" >"$S3D/out" 2>"$S3D/err" || stamp_rc=$?
+stamp_rc=${stamp_rc:-0}
+python3 -I "$WFP/site_settings.py" get wp-wfp-shop-media "$S3D/back.json" >"$S3D/get.err" 2>&1 || true
+ok "no-op with existing settings and PLACEMENT=azure:westus2 writes placement (rc $stamp_rc)" "$(
+  [ "$stamp_rc" = 0 ] && python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); raise SystemExit(0 if d.get("placement")=="azure:westus2" and d.get("settings",{}).get("MAIL_FROM")=="wp@example.com" else 1)' "$S3D/back.json" && echo 1 || echo 0
+)"
+PLACEMENT=azure:westus2
+kind_a_stamp_placement_record wp-wfp-shop-media "$S3D/w" >/dev/null 2>&1 || true
+python3 -I "$WFP/site_settings.py" get wp-wfp-shop-media "$S3D/back.json" >/dev/null 2>&1 || true
+ok "no-op stamp leaves the same placement in place" "$(
+  python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); raise SystemExit(0 if d.get("placement")=="azure:westus2" else 1)' "$S3D/back.json" && echo 1 || echo 0
+)"
+kill "$S3PID" 2>/dev/null || true
+wait "$S3PID" 2>/dev/null || true
+rm -rf "$S3D"
+unset PLACEMENT SITE_KIND SETTINGS_RECORDED WFP_S3_ENDPOINT WFP_S3_KEY_ID WFP_S3_SECRET CLOUDFLARE_ACCOUNT_ID
 rm -f "$log"
 
 # 3. A demo-sites file forces DEMO_LOCK. No file does not.

@@ -248,6 +248,59 @@ def default_http_allow_hosts():
 BUILD_SHAPE = ("OPCACHE_SPLIT", "OPCACHE_REMOTE", "SITE_REMOTE")
 
 
+
+# #1502: one [placement] assignment a kind a rollback puts back.
+# Empty KIND_A_ROLLBACK_PLACEMENT leaves this run's block.
+_PLACEMENT_LINE = re.compile(
+    r'^(?:region = "(?:aws|gcp|azure):[a-z0-9-]{2,40}"|mode = "smart"|host = "[A-Za-z0-9.-]{1,253}:[0-9]{1,5}")$'
+)
+
+
+def restore_placement(text, env=os.environ):
+    """Put the prior [placement] line back. Return (text, ok).
+    ok is false only when a prior line was set and could not be written.
+    An empty prior leaves this run's block."""
+    line = (env.get("KIND_A_ROLLBACK_PLACEMENT") or "").strip()
+    if not line:
+        return text, True
+    if not _PLACEMENT_LINE.match(line):
+        print("site settings: the prior placement is not a placement line; the rollback keeps this run's", file=sys.stderr)
+        return text, False
+    lines = text.split("\n")
+    start = None
+    for i, raw in enumerate(lines):
+        if raw.strip() == "[placement]":
+            start = i
+            break
+    if start is None:
+        print("site settings: ROLLBACK LEFT placement (no [placement] block to put the prior line into)", file=sys.stderr)
+        return text, False
+    out = []
+    i = 0
+    wrote = False
+    while i < len(lines):
+        out.append(lines[i])
+        if i != start:
+            i += 1
+            continue
+        i += 1
+        while i < len(lines) and not lines[i].strip().startswith("["):
+            st = lines[i].strip()
+            if st and not st.startswith("#") and "=" in st:
+                if not wrote:
+                    out.append(line)
+                    wrote = True
+                i += 1
+                continue
+            out.append(lines[i])
+            i += 1
+        if not wrote:
+            out.append(line)
+            wrote = True
+    print("  rollback: placement restored to the prior value", file=sys.stderr)
+    return "\n".join(out), True
+
+
 def rollback_conf(conf_in, record_path, conf_out, env=os.environ):
     """#1385: the config a rollback re-deploys. The update rendered conf_in from THIS run's settings; a
     rollback must put back the recorded ones, or a setting that broke the update stays live while the
@@ -255,27 +308,36 @@ def rollback_conf(conf_in, record_path, conf_out, env=os.environ):
     touched (a setting it changed, or a measurement flag it set, which is never recorded). Each goes
     back to its recorded value in [vars], or its line is removed when the record has none. A key that
     has no [vars] line of its own cannot be put back here: it is named, and the exit is 4. With no
-    record at all, the config is kept and every setting this run holds is named. Values are never printed."""
+    record at all, the config is kept and every setting this run holds is named. Values are never printed.
+    KIND_A_ROLLBACK_PLACEMENT, when set, is the prior [placement] line (region, mode, or host).
+    An empty value leaves this run's block (#1502)."""
     import tomllib
     text = open(conf_in).read()
+    def emit(body, code):
+        if not isinstance(body, str):
+            body = "\n".join(body)
+        body, placed = restore_placement(body, env)
+        open(conf_out, "w").write(body)
+        if code == 0 and not placed:
+            return 4
+        return code
+
     rec = None
     if record_path and os.path.exists(record_path):
         rec = json.load(open(record_path))
     left = []
     if rec is None:
         left = sorted(k for k in SETTINGS + MEASUREMENT if k not in PRESENCE and k not in BUILD_SHAPE and env.get(k))
-        open(conf_out, "w").write(text)
+        code = 4 if left else 0
         if left:
             print("site settings: ROLLBACK LEFT A SETTING LIVE: %s (no recorded settings, so the rollback re-deploys this run's; set them back by hand)" % " ".join(left), file=sys.stderr)
-            return 4
-        return 0
+        return emit(text, code)
     settings = rec.get("settings") or {}
     try:
         vars_ = tomllib.loads(text).get("vars") or {}
     except tomllib.TOMLDecodeError:
         print("site settings: the rendered config does not parse; the rollback cannot put the settings back", file=sys.stderr)
-        open(conf_out, "w").write(text)
-        return 4
+        return emit(text, 4)
     def want(k):
         if k in MEASUREMENT:
             return None
@@ -317,11 +379,11 @@ def rollback_conf(conf_in, record_path, conf_out, env=os.environ):
         else:
             lines[i] = "%s = %s" % (k, json.dumps(w))
             print("  rollback: %s restored to the recorded value" % k, file=sys.stderr)
-    open(conf_out, "w").write("\n".join(lines))
+    code = 0
     if left:
         print("site settings: ROLLBACK LEFT A SETTING LIVE: %s (no [vars] line of its own to put back; set it back by hand)" % " ".join(sorted(left)), file=sys.stderr)
-        return 4
-    return 0
+        code = 4
+    return emit("\n".join(lines), code)
 
 def dropcheck(conf_path, bindings_path, secrets_path, env=os.environ):
     drop = drop_list(env)
