@@ -22,6 +22,7 @@ api() {
     empty) printf '%s\n' '{"success":true,"result":{"placement":{}}}' ; printf '200'; return 0 ;;
     smart) printf '%s\n' '{"success":true,"result":{"placement":{"mode":"smart"}}}' ; printf '200'; return 0 ;;
     region) printf '%s\n' '{"success":true,"result":{"placement":{"mode":"targeted","region":"azure:westus2"}}}' ; printf '200'; return 0 ;;
+    host) printf '%s\n' '{"success":true,"result":{"placement":{"host":"db.example.org:3307"}}}' ; printf '200'; return 0 ;;
     *) echo "bad API_MODE $API_MODE" >&2; return 1 ;;
   esac
 }
@@ -140,7 +141,47 @@ kind_a_placement shop >"$log" 2>&1; rc=$?
 ok "a bad recorded placement is refused (rc $rc)" "$(
   [ "$rc" = 2 ] && [ -z "${PLACEMENT:-}" ] && echo 1 || echo 0
 )"
+# A live host string is placement host. Recorded host needs MYSQL_HOST.
+unset PLACEMENT
 unset KIND_A_RECORDED_PLACEMENT
+unset MYSQL_HOST
+unset MYSQL_PORT
+API_MODE=host
+kind_a_placement shop >"$log" 2>&1; rc=$?
+ok "live placement host db.example.org:3307 is kept (rc $rc, ${PLACEMENT:-empty}, ${MYSQL_HOST:-empty}:${MYSQL_PORT:-empty})" "$(
+  [ "$rc" = 0 ] && [ "${PLACEMENT:-}" = host ] && [ "${MYSQL_HOST:-}" = db.example.org ] && [ "${MYSQL_PORT:-}" = 3307 ] && grep -q 'live script settings' "$log" && echo 1 || echo 0
+)"
+unset PLACEMENT
+unset MYSQL_HOST
+unset MYSQL_PORT
+API_MODE=empty
+KIND_A_RECORDED_PLACEMENT=host
+MYSQL_HOST=db.example.org
+kind_a_placement shop >"$log" 2>&1; rc=$?
+ok "live placement {} and recorded host with MYSQL_HOST: recorded (rc $rc, ${PLACEMENT:-empty})" "$(
+  [ "$rc" = 0 ] && [ "${PLACEMENT:-}" = host ] && [ "${MYSQL_HOST:-}" = db.example.org ] && grep -q '(recorded settings)' "$log" && ! grep -q '(live script settings)' "$log" && echo 1 || echo 0
+)"
+unset PLACEMENT
+API_MODE=none
+KIND_A_RECORDED_PLACEMENT=host
+MYSQL_HOST=db.example.org
+MYSQL_PORT=3306
+kind_a_placement shop >"$log" 2>&1; rc=$?
+ok "live mode targeted and recorded host with MYSQL_HOST: recorded (rc $rc, ${PLACEMENT:-empty})" "$(
+  [ "$rc" = 0 ] && [ "${PLACEMENT:-}" = host ] && [ "${MYSQL_HOST:-}" = db.example.org ] && grep -q '(recorded settings)' "$log" && grep -q 'no region' "$log" && ! grep -q '(live script settings)' "$log" && echo 1 || echo 0
+)"
+unset PLACEMENT
+unset MYSQL_HOST
+unset MYSQL_PORT
+API_MODE=empty
+KIND_A_RECORDED_PLACEMENT=host
+kind_a_placement shop >"$log" 2>&1; rc=$?
+ok "live placement {} and recorded host without MYSQL_HOST: refused (rc $rc)" "$(
+  [ "$rc" = 2 ] && [ -z "${PLACEMENT:-}" ] && grep -q 'recorded placement is host' "$log" && grep -q 'MYSQL_HOST' "$log" && grep -q 'MYSQL_PORT' "$log" && echo 1 || echo 0
+)"
+unset KIND_A_RECORDED_PLACEMENT
+unset MYSQL_HOST
+unset MYSQL_PORT
 recf=$(mktemp)
 printf '%s\n' '{"v":1,"settings":{},"placement":"azure:westus2"}' > "$recf"
 got=$(kind_a_placement_recorded "$recf")

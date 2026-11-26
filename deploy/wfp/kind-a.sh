@@ -189,10 +189,18 @@ json.dump(d, open(p, "w"), sort_keys=True)' "$1" "$2"
 }
 # kind_a_take_recorded <site> <why>: use KIND_A_RECORDED_PLACEMENT when it is set.
 # 0 taken. 1 nothing recorded. 2 recorded, and placement_check refuses it.
+# Recorded host needs MYSQL_HOST. A missing host is a refusal. Do not report success.
 kind_a_take_recorded() {
   local s=$1 why=$2 rec
   rec=${KIND_A_RECORDED_PLACEMENT:-}
   [ -n "$rec" ] || return 1
+  if [ "$rec" = host ]; then
+    if ! [[ "${MYSQL_HOST:-}" =~ ^[A-Za-z0-9.-]{1,253}$ ]] || ! [[ "${MYSQL_PORT:-3306}" =~ ^[0-9]{1,5}$ ]]; then
+      echo "site $s: the recorded placement is host. Set MYSQL_HOST and MYSQL_PORT, or set PLACEMENT to a region. Nothing was changed." >&2
+      PLACEMENT=
+      return 2
+    fi
+  fi
   PLACEMENT=$rec
   if ! ( . "$WFP/../render-conf.sh" >/dev/null 2>&1; placement_check ); then
     echo "site $s: the recorded placement $rec is not a value this render accepts. Set PLACEMENT. Nothing was changed." >&2
@@ -203,12 +211,13 @@ kind_a_take_recorded() {
   return 0
 }
 # kind_a_placement <site>: the placement a kind a update renders. This run's PLACEMENT wins when it is set.
-# Else a region, or smart, that the live script settings actually return.
+# Else a region, smart, or host that the live script settings actually return.
+# A live host string is host or host:port. No port means 3306.
 # A live body of {} or {"mode":"targeted"} has no region (measured #1310, 2026-11-22).
 # Then the recorded placement. Exit 2 when none of these is a value placement_check accepts.
 # The caller has changed nothing yet. Do not say the live GET returned a region when it did not.
 kind_a_placement() {
-  local s=$1 out code parsed kind value rc
+  local s=$1 out code parsed kind value rc hp pp
   if [ -n "${PLACEMENT:-}" ]; then
     ( . "$WFP/../render-conf.sh" >/dev/null 2>&1; placement_check ) || return 2
     echo "site $s: placement $PLACEMENT (this run)"
@@ -244,12 +253,16 @@ if not isinstance(p, dict):
     raise SystemExit(1)
 region = p.get("region") if isinstance(p.get("region"), str) else ""
 mode = p.get("mode") if isinstance(p.get("mode"), str) else ""
+host = p.get("host") if isinstance(p.get("host"), str) else ""
 if region:
     print("region")
     print(region)
 elif mode == "smart":
     print("smart")
     print("smart")
+elif host:
+    print("host")
+    print(host)
 elif mode in ("", "targeted"):
     print("absent")
     print(mode or "empty")
@@ -270,6 +283,31 @@ else:
       if ! ( . "$WFP/../render-conf.sh" >/dev/null 2>&1; placement_check ); then
         echo "site $s: the live placement $value is not a value this render accepts. Set PLACEMENT. Nothing was changed." >&2
         PLACEMENT=
+        return 2
+      fi
+      echo "site $s: placement $PLACEMENT (live script settings)"
+      return 0
+      ;;
+    host)
+      hp=$value
+      pp=3306
+      if [[ "$value" == *:* ]]; then
+        hp=${value%%:*}
+        pp=${value#*:}
+      fi
+      if [ -z "$hp" ] || [ -z "$pp" ] || [[ "$pp" == *:* ]]; then
+        echo "site $s: the live placement host is not a host and port. Set PLACEMENT. Nothing was changed." >&2
+        PLACEMENT=
+        return 2
+      fi
+      MYSQL_HOST=$hp
+      MYSQL_PORT=$pp
+      PLACEMENT=host
+      if ! ( . "$WFP/../render-conf.sh" >/dev/null 2>&1; placement_check ); then
+        echo "site $s: the live placement host ${value} is not a host name this render accepts. Set PLACEMENT. Nothing was changed." >&2
+        PLACEMENT=
+        unset MYSQL_HOST
+        unset MYSQL_PORT
         return 2
       fi
       echo "site $s: placement $PLACEMENT (live script settings)"
