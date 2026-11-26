@@ -10,7 +10,7 @@ NAME=my-site ./deploy/deploy.sh
 
 At the end the script prints the site address, the D1 time per statement, the `e2e.sh` result and the page times, and writes them to `deploy/results/<name>-<time>.json`. Remove the site with `NAME=my-site ./deploy/destroy.sh`.
 
-**Tools:** git, Node.js 22 or later, Terraform 1.5 or later, and **Python 3.11 or later** (macOS ships 3.9: install a newer one, for example with Homebrew). `deploy/wfp/site update` refuses an older Python before it changes anything, because its rollback reads the config with `tomllib` (#1385).
+**Tools:** git, Node.js 22 or later, Terraform 1.5 or later for local state (1.10 or later for R2 state), and **Python 3.11 or later** (macOS ships 3.9: install a newer one, for example with Homebrew). `deploy/wfp/site update` refuses an older Python before it changes anything, because its rollback reads the config with `tomllib` (#1385).
 
 ## The variants
 
