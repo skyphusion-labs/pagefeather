@@ -613,11 +613,14 @@ woo_extras_var() {
 # (site-lock.mjs) so php/demo-store-notice.php prints the Pagefeather demo copy on
 # the home page. Mail is refused (sendEmail). Unset renders nothing. Recorded (#558).
 demo_lock_var() {
+  local site=${1:-}
   case "${DEMO_LOCK:-}" in
-    "") ;;
-    on) echo 'DEMO_LOCK = "on"' ;;
+    ""|on) ;;
     *) echo "DEMO_LOCK must be on or unset, not ${DEMO_LOCK}" >&2; return 1 ;;
   esac
+  if [ "${DEMO_LOCK:-}" = on ] || wfp_demo_site "$site"; then
+    echo 'DEMO_LOCK = "on"'
+  fi
 }
 # render_user_parts <site> <origin> (#328 PR 2): compute every fragment the wranglerToml
 # emitter needs. Prints one JSON object on stdout. Exit codes match the old helpers.
@@ -683,7 +686,7 @@ render_user_parts() {
   ( . "$WFP/../pdf-invoice.sh"; pdf_invoice_check b-dosql ) || return 1
   local woo_extras; woo_extras=$(woo_extras_var) || return 1
   [ -z "$woo_extras" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$woo_extras
-  local demo_lock; demo_lock=$(demo_lock_var) || return 1
+  local demo_lock; demo_lock=$(demo_lock_var "$s") || return 1
   [ -z "$demo_lock" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$demo_lock
   # FAULT_INJECT (#730): the throwaway-only post-INSERT fault, the same rule as deploy.sh (deploy/fault-inject.sh).
   local fault; fault=$(fault_inject_var "$s") || return 2
@@ -751,8 +754,14 @@ render_user() { # render_user <site> <origin>
 # hyperdrive_id and oc_kv_id. A subshell, so render-conf.sh and a-settings.sh define nothing in this shell.
 render_user_a() {
   local s=$1 origin=$2 conf rc=0
+  local demo_lock=${DEMO_LOCK:-}
+  case "$demo_lock" in
+    ""|on) ;;
+    *) echo "DEMO_LOCK must be on or unset, not ${demo_lock}" >&2; return 1 ;;
+  esac
+  if wfp_demo_site "$s"; then demo_lock=on; fi
   conf=$( . "$WFP/../a-settings.sh" && . "$WFP/../observability.sh" && . "$WFP/../render-conf.sh" &&
-    NAME=$s VARIANT=a LOCATION=${PHP_LOCATION:-enam} SITE_ORIGIN=$origin COMPAT=$(compat_date) BUCKET=$(media_bucket "$s") AI=0 \
+    DEMO_LOCK=$demo_lock NAME=$s VARIANT=a LOCATION=${PHP_LOCATION:-enam} SITE_ORIGIN=$origin COMPAT=$(compat_date) BUCKET=$(media_bucket "$s") AI=0 \
       RENDER_WFP=1 RENDER_SCRIPT=$(user_script "$s") && cd "$APP" && render_conf ) || rc=$?
   [ "$rc" = 0 ] || return "$rc"
   printf '%s\n' "$conf"
@@ -764,6 +773,10 @@ render_user_a() {
 # directory is the b-dosql CODE_ONLY contract (its README, deploy-workers.yml).
 wfp_live_site() {
   [ -n "${1:-}" ] && [ -f "$WFP/live-sites/$1" ]
+}
+# wfp_demo_site <name>: a public WfP example site whose Worker must render the demo lock and notice.
+wfp_demo_site() {
+  [ -n "${1:-}" ] && [ -f "$WFP/demo-sites/$1" ]
 }
 # obs_live_site <name>: the one predicate for the OBSERVABILITY=full refusal.
 # Clause 1 is a deploy/live-sites/<name>.env file (b-dosql, #639).

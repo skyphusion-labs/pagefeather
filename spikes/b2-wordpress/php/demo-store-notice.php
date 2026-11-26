@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: Demo store notice
- * Description: On a DEMO_LOCK site, the home page says this is a Pagefeather demo store (#catalog gate).
+ * Description: On a DEMO_LOCK site, the home page names the Pagefeather variant and demo data.
  *
  * Inert unless PAGEFEATHER_DEMO_STORE is true (site-lock.mjs when DEMO_LOCK=on). Plain STE copy.
  * No signup link and no upsell. Prints once on the front page only (the_content; not wp_body_open).
@@ -12,17 +12,40 @@ if ( ! defined( 'PAGEFEATHER_DEMO_STORE' ) || true !== PAGEFEATHER_DEMO_STORE ) 
 }
 
 /**
+ * The storage variant named on the home page.
+ *
+ * @return string
+ */
+function pagefeather_demo_store_variant() {
+	if ( defined( 'PAGEFEATHER_DEMO_VARIANT' ) ) {
+		if ( 'b-dosql' === PAGEFEATHER_DEMO_VARIANT ) {
+			return 'the Pagefeather b-dosql variant, with its built-in SQLite database';
+		}
+		if ( 'hyperdrive' === PAGEFEATHER_DEMO_VARIANT ) {
+			return 'the Pagefeather approach A variant, with MySQL through Hyperdrive';
+		}
+	}
+	return 'a database variant that is not identified';
+}
+
+/**
  * The home-page lines. One idea per sentence.
  *
  * @return string[]
  */
 function pagefeather_demo_store_lines() {
-	return array(
-		'This is a demo store of the Pagefeather framework.',
-		'Pagefeather runs WordPress and WooCommerce on Cloudflare.',
-		'The catalog is sample data for testing.',
-		'Nothing here is for sale.',
+	$lines = array(
+		'This is a demo site of the Pagefeather framework.',
+		'Pagefeather runs WordPress on Cloudflare.',
+		'This demo runs on ' . pagefeather_demo_store_variant() . '.',
 	);
+	if ( class_exists( 'WooCommerce' ) ) {
+		$lines[] = 'WooCommerce is active here. Its catalog and orders are sample data for testing.';
+	} else {
+		$lines[] = 'The content is sample data for testing.';
+	}
+	$lines[] = 'Nothing here is for sale.';
+	return $lines;
 }
 
 /**
@@ -42,7 +65,13 @@ add_filter(
 		if ( is_admin() ) {
 			return $value;
 		}
-		return 'Pagefeather demo store';
+		if ( defined( 'PAGEFEATHER_DEMO_VARIANT' ) && 'b-dosql' === PAGEFEATHER_DEMO_VARIANT ) {
+			return 'Pagefeather demo site, b-dosql';
+		}
+		if ( defined( 'PAGEFEATHER_DEMO_VARIANT' ) && 'hyperdrive' === PAGEFEATHER_DEMO_VARIANT ) {
+			return 'Pagefeather demo site, Hyperdrive';
+		}
+		return 'Pagefeather demo site';
 	}
 );
 

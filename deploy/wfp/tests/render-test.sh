@@ -11,7 +11,7 @@
 # - valid_site: the names it takes and refuses.
 # Exits 0 only when every check holds. Needs bash, python3 (tomllib).
 set -u
-unset MAIL_FROM MAIL_FROM_NAME SITE_TITLE
+unset MAIL_FROM MAIL_FROM_NAME SITE_TITLE DEMO_LOCK
 unset HTTP_ALLOW_HOSTS
 unset WOO_EXTRAS
 unset OBJECT_START_BY_S OBJECT_CALL_DEADLINE_S OBJECT_DISCONNECT_SHED
@@ -61,6 +61,26 @@ good = (c["name"] == "site-one" and "workers_dev" not in c and c["cache"] == {"e
         and c["migrations"] == [{"tag": "v1", "new_sqlite_classes": ["PhpRuntime"]}] and c["main"] == "index.js"
         and "MAIL_FROM" not in v and c["send_email"] == [{"name": "EMAIL"}])
 print(1 if good else 0)' "$T/user.toml")"
+render_user wispress https://wispress.dev > "$T/wispress.toml"
+ok "the wispress public demo marker renders DEMO_LOCK" "$("$PY" -c '
+import sys, tomllib
+c = tomllib.load(open(sys.argv[1], "rb"))
+print(1 if c["vars"].get("DEMO_LOCK") == "on" else 0)
+' "$T/wispress.toml")"
+out() {
+	case "$1" in
+		hyperdrive_id) echo 0123456789abcdef0123456789abcdef ;;
+		oc_kv_id) echo fedcba9876543210fedcba9876543210 ;;
+		*) return 1 ;;
+	esac
+}
+SITE_KIND=a PLACEMENT=azure:westus2 render_user wispress https://wispress.dev > "$T/wispress-a.toml"
+ok "the wispress demo marker also renders DEMO_LOCK on approach A" "$("$PY" -c '
+import sys, tomllib
+c = tomllib.load(open(sys.argv[1], "rb"))
+v = c["vars"]
+print(1 if v.get("DEMO_LOCK") == "on" and any(h.get("binding") == "HYPERDRIVE" for h in c.get("hyperdrive", [])) else 0)
+' "$T/wispress-a.toml")"
 (
   export SITE_TITLE='North Shop'
   render_user titled https://titled.example
