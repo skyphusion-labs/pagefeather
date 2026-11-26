@@ -23,6 +23,7 @@ api() {
     smart) printf '%s\n' '{"success":true,"result":{"placement":{"mode":"smart"}}}' ; printf '200'; return 0 ;;
     region) printf '%s\n' '{"success":true,"result":{"placement":{"mode":"targeted","region":"azure:westus2"}}}' ; printf '200'; return 0 ;;
     host) printf '%s\n' '{"success":true,"result":{"placement":{"host":"db.example.org:3307"}}}' ; printf '200'; return 0 ;;
+    badhost) printf '%s\n' '{"success":true,"result":{"placement":{"host":"not_a_host:3306"}}}' ; printf '200'; return 0 ;;
     *) echo "bad API_MODE $API_MODE" >&2; return 1 ;;
   esac
 }
@@ -41,6 +42,9 @@ ok "unset kind: kind_a_refuse exits 0" "$([ "$rc" = 0 ] && echo 1 || echo 0)"
 body=$(awk '/^update_one_inner\(\)/,/^}/' "$SITE")
 ok "update does not call kind_a_refuse" "$(printf '%s\n' "$body" | grep -c 'kind_a_refuse' | grep -qx 0 && echo 1 || echo 0)"
 ok "update calls kind_a_placement" "$(printf '%s\n' "$body" | grep -c 'kind_a_placement "$s"' | grep -qx 1 && echo 1 || echo 0)"
+ok "site saves the operator MYSQL_HOST for one run" "$(grep -F -c 'WFP_MYSQL_HOST_RUN=${MYSQL_HOST-}' "$SITE" | grep -qx 1 && echo 1 || echo 0)"
+ok "site saves the operator MYSQL_PORT for one run" "$(grep -F -c 'WFP_MYSQL_PORT_RUN=${MYSQL_PORT-}' "$SITE" | grep -qx 1 && echo 1 || echo 0)"
+ok "kind a update localizes MYSQL_HOST and MYSQL_PORT" "$(printf '%s\n' "$body" | grep -F -c 'local -x MYSQL_HOST="${WFP_MYSQL_HOST_RUN-}" MYSQL_PORT="${WFP_MYSQL_PORT_RUN-}"' | grep -qx 1 && echo 1 || echo 0)"
 ok "update loads the recorded placement before that call" "$(printf '%s\n' "$body" | grep -c 'kind_a_placement_recorded' | grep -qx 1 && echo 1 || echo 0)"
 ok "recorded placement is read after keep_settings" "$(
   k=$(printf '%s\n' "$body" | grep -n 'keep_settings "\$bucket"' | head -1 | cut -d: -f1)
@@ -178,6 +182,59 @@ KIND_A_RECORDED_PLACEMENT=host
 kind_a_placement shop >"$log" 2>&1; rc=$?
 ok "live placement {} and recorded host without MYSQL_HOST: refused (rc $rc)" "$(
   [ "$rc" = 2 ] && [ -z "${PLACEMENT:-}" ] && grep -q 'recorded placement is host' "$log" && grep -q 'MYSQL_HOST' "$log" && grep -q 'MYSQL_PORT' "$log" && echo 1 || echo 0
+)"
+# A refused live host must put the operator values back. It must not clear them.
+unset PLACEMENT
+unset KIND_A_RECORDED_PLACEMENT
+API_MODE=badhost
+MYSQL_HOST=keep.example
+MYSQL_PORT=3311
+kind_a_placement shop >"$log" 2>&1; rc=$?
+ok "refused live host restores MYSQL_HOST (rc $rc, ${MYSQL_HOST:-empty}:${MYSQL_PORT:-empty})" "$(
+  [ "$rc" = 2 ] && [ "${MYSQL_HOST:-}" = keep.example ] && [ "${MYSQL_PORT:-}" = 3311 ] && [ -z "${PLACEMENT:-}" ] && grep -q 'not a host name' "$log" && echo 1 || echo 0
+)"
+unset MYSQL_HOST
+unset MYSQL_PORT
+unset PLACEMENT
+kind_a_placement shop >"$log" 2>&1; rc=$?
+ok "refused live host leaves an unset MYSQL_HOST unset (rc $rc)" "$(
+  [ "$rc" = 2 ] && [ "${MYSQL_HOST+x}" != x ] && [ "${MYSQL_PORT+x}" != x ] && echo 1 || echo 0
+)"
+# update --all runs many sites in one shell. Site 1's live host must not stick.
+# The harness uses the same local -x the site script uses around kind_a_placement.
+unset PLACEMENT
+unset KIND_A_RECORDED_PLACEMENT
+unset MYSQL_HOST
+unset MYSQL_PORT
+API_MODE=host
+kind_a_placement site1 >"$log" 2>&1; rc=$?
+ok "live host on site 1 sets MYSQL_HOST in this shell (rc $rc, ${MYSQL_HOST:-empty})" "$(
+  [ "$rc" = 0 ] && [ "${MYSQL_HOST:-}" = db.example.org ] && [ "${MYSQL_PORT:-}" = 3307 ] && echo 1 || echo 0
+)"
+# The operator set no host. site saves that at start, before any site runs.
+WFP_MYSQL_HOST_RUN=
+WFP_MYSQL_PORT_RUN=
+WFP_PLACEMENT_RUN=
+API_MODE=empty
+KIND_A_RECORDED_PLACEMENT=host
+scoped_kind_a() {
+  local -x MYSQL_HOST="${WFP_MYSQL_HOST_RUN-}" MYSQL_PORT="${WFP_MYSQL_PORT_RUN-}"
+  local PLACEMENT="${WFP_PLACEMENT_RUN-}"
+  scoped_rc=0
+  kind_a_placement "$1" >"$log" 2>&1 || scoped_rc=$?
+  scoped_host=${MYSQL_HOST-}
+  scoped_port=${MYSQL_PORT-}
+  scoped_placement=${PLACEMENT-}
+}
+scoped_kind_a site2
+ok "site 2 does not keep site 1 host when the operator set none (rc $scoped_rc, ${scoped_host:-empty})" "$(
+  [ "$scoped_rc" = 2 ] && [ -z "${scoped_host:-}" ] && [ -z "${scoped_port:-}" ] && [ -z "${scoped_placement:-}" ] && [ "${MYSQL_HOST:-}" = db.example.org ] && grep -q 'recorded placement is host' "$log" && echo 1 || echo 0
+)"
+WFP_MYSQL_HOST_RUN=operator.example
+WFP_MYSQL_PORT_RUN=3310
+scoped_kind_a site2
+ok "site 2 keeps the operator host, not site 1 (rc $scoped_rc, ${scoped_host:-empty}:${scoped_port:-empty})" "$(
+  [ "$scoped_rc" = 0 ] && [ "$scoped_host" = operator.example ] && [ "$scoped_port" = 3310 ] && [ "$scoped_placement" = host ] && [ "${MYSQL_HOST:-}" = db.example.org ] && grep -q '(recorded settings)' "$log" && ! grep -q '(live script settings)' "$log" && echo 1 || echo 0
 )"
 unset KIND_A_RECORDED_PLACEMENT
 unset MYSQL_HOST

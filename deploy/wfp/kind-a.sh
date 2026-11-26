@@ -218,6 +218,7 @@ kind_a_take_recorded() {
 # The caller has changed nothing yet. Do not say the live GET returned a region when it did not.
 kind_a_placement() {
   local s=$1 out code parsed kind value rc hp pp
+  local prior_mysql_host_set=0 prior_mysql_port_set=0 prior_mysql_host= prior_mysql_port=
   if [ -n "${PLACEMENT:-}" ]; then
     ( . "$WFP/../render-conf.sh" >/dev/null 2>&1; placement_check ) || return 2
     echo "site $s: placement $PLACEMENT (this run)"
@@ -300,14 +301,18 @@ else:
         PLACEMENT=
         return 2
       fi
+      # Save the caller values first. A refused host puts them back.
+      # Do not clear a value the operator set. update --all runs many sites.
+      if [ "${MYSQL_HOST+x}" = x ]; then prior_mysql_host_set=1; prior_mysql_host=$MYSQL_HOST; fi
+      if [ "${MYSQL_PORT+x}" = x ]; then prior_mysql_port_set=1; prior_mysql_port=$MYSQL_PORT; fi
       MYSQL_HOST=$hp
       MYSQL_PORT=$pp
       PLACEMENT=host
       if ! ( . "$WFP/../render-conf.sh" >/dev/null 2>&1; placement_check ); then
         echo "site $s: the live placement host ${value} is not a host name this render accepts. Set PLACEMENT. Nothing was changed." >&2
         PLACEMENT=
-        unset MYSQL_HOST
-        unset MYSQL_PORT
+        if [ "$prior_mysql_host_set" = 1 ]; then MYSQL_HOST=$prior_mysql_host; else unset MYSQL_HOST; fi
+        if [ "$prior_mysql_port_set" = 1 ]; then MYSQL_PORT=$prior_mysql_port; else unset MYSQL_PORT; fi
         return 2
       fi
       echo "site $s: placement $PLACEMENT (live script settings)"

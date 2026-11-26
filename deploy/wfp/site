@@ -49,6 +49,9 @@ has_ws() { list_sites | grep -qx "$1"; }
 out() { tfr site output -raw "$1"; }
 # The operator's PLACEMENT, before a kind a update assigns PLACEMENT for one site (#1502).
 WFP_PLACEMENT_RUN=${PLACEMENT-}
+# The operator's MySQL host and port, before one kind a update assigns them (#1502).
+WFP_MYSQL_HOST_RUN=${MYSQL_HOST-}
+WFP_MYSQL_PORT_RUN=${MYSQL_PORT-}
 # Update one site: snapshot the data, rebuild from the current tree, re-upload
 # the SAME script (same object, same data) when the build id or the config
 # hash differs, record both, and verify the new build is live and the site
@@ -129,7 +132,10 @@ update_one_inner() {
   if [ "$SITE_KIND" = a ]; then
     kind_a_demo_lock "$s"
     KIND_A_RECORDED_PLACEMENT=$(kind_a_placement_recorded "$WDIR/settings.json")
+    # local -x keeps host placement inside this one update (update --all runs many).
+    # Same idea as PLACEMENT and the recorded settings.
     local PLACEMENT="${WFP_PLACEMENT_RUN-}"
+    local -x MYSQL_HOST="${WFP_MYSQL_HOST_RUN-}" MYSQL_PORT="${WFP_MYSQL_PORT_RUN-}"
     kind_a_placement "$s" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
   fi
   # #764: the RECORDED inputs can carry conformance content too: checked again on them, before the snapshot,
