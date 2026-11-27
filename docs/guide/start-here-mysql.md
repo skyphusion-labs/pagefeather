@@ -44,7 +44,7 @@ We use two names, as on [Start here](start-here.md):
 
 ### Step 2: install the tools (in your terminal)
 
-You need git, Node.js 22 or later, Terraform 1.5 or later for local state (1.10 or later for R2 state), Python 3.11 or later, curl, zip, unzip and lsof. The commands are the same as in [Start here, step 2](start-here.md#step-2-install-the-tools-in-your-terminal).
+You need git, Node.js 22 or later, and Python 3.11 or later. You also need curl, zip, unzip, and lsof. Terraform 1.5 or later is enough for local state. R2 state needs Terraform 1.10 or later ([#1488](https://github.com/skyphusion-labs/pagefeather/issues/1488)). The commands are the same as in [Start here, step 2](start-here.md#step-2-install-the-tools-in-your-terminal).
 
 ### Step 3: get the code
 
